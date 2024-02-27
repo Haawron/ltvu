@@ -188,4 +188,6 @@ croppers/Grounded-Segment-Anything/visam.avi
 baselines/MasterProject/stap3/i3d-checkpoint/
 llms/Video-LLaVA/videollava/serve/examples/sample_demo_8.mp4
 llms/Video-LLaVA/videollava/serve/examples/sample_demo_13.mp4
+croppers/Grounded-Segment-Anything/VISAM/visam.gif
+tasks/Ego4D/ego4d.json
 *.pth
