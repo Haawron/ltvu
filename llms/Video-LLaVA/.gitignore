@@ -6,3 +6,4 @@ ltvu/slurm/logs/
 *.pkl
 *.csv
 *.log
+-*.py

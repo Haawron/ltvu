@@ -19,6 +19,7 @@ from videollava.model.builder import load_pretrained_model
 from videollava.utils import disable_torch_init
 from videollava.mm_utils import tokenizer_image_token, get_model_name_from_path, KeywordsStoppingCriteria
 
+
 SEP = '</s>'
 REPLACE_PATTERNS = [  # the order matters
     {'replaced_with': '#C',
@@ -157,7 +158,7 @@ class Debator:
         model,
         tokenizer,
         video_processor,
-        name: str = '',
+        name: str = 'Assistant',
     ):
         self.p_video = p_video
         self.start_sec = start_sec
@@ -409,7 +410,7 @@ class DebateManager:
 def load_model():
     disable_torch_init()
     model_path = 'LanguageBind/Video-LLaVA-7B'
-    cache_dir = 'cache_dir'
+    cache_dir = '/data/gunsbrother/prjs/ltvu/llms/Video-LLaVA/cache_dir'
     device = 'cuda'
     load_4bit, load_8bit = True, False
     model_name = get_model_name_from_path(model_path)
@@ -423,6 +424,16 @@ def worker_single_q_instance(
     model, tokenizer, video_processor,
     p_captions_dir, step1_captions_json, clip_uid, q_uid
 ):
+    """# Worker for a single query instance.
+    ## Requires:
+    - Loaded model: `model`, `tokenizer`, `video_processor`
+    - Short-term captions: `p_captions_dir`
+
+    ## Steps:
+    1. Load the corresponding short-term captions for this query instance.
+    2. Run the debate manager from first to N rounds.
+    3. Dump the result in a json file named "{clip_uid}/{q_uid}.json"
+    """
     p_clip = p_clips_dir / f'{clip_uid}.mp4'
     q_inst = step1_captions_json[clip_uid]['q_instances'][q_uid]
     q_query = q_inst['query']
@@ -506,7 +517,7 @@ if __name__ == '__main__':
             p_captions_dir, step1_captions_json, clip_uid, q_uid)
 
     elif args.only_subsets:
-        from slurm.scripts.submitter import Submitter, get_logger, wait
+        from slurm.submitter import Submitter, get_logger, wait
         with p_sample_captions_json.open() as f:
             step1_captions_json = json.load(f)
         clip_uids = list(step1_captions_json.keys())

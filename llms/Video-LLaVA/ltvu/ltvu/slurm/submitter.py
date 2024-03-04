@@ -29,7 +29,8 @@ class Submitter:
         self.slurm_array_parallelism = slurm_array_parallelism
         self.slurm_additional_parameters = slurm_additional_parameters
 
-        p_slurm_dir = Path(__file__).parent.parent
+        # p_slurm_dir = Path(__file__).parent.parent
+        p_slurm_dir = Path('/data/gunsbrother/prjs/ltvu/llms/Video-LLaVA/ltvu/slurm')
         if self.run_name:
             self.exp_name = f'{self.model_name}-{self.run_name}'
             self.template_p_logs_dir = p_slurm_dir / f'logs/%A-{self.run_name}/%j'  # %A means the jobname

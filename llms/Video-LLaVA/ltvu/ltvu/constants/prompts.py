@@ -33,6 +33,18 @@ SHORT_TERM_PROMPTS = [
         'What can you see in this video?',
 
         'What objects are there that help in answering the question "{query}"?',
+    ]},
+
+    {'type': '20240301v1', 'prompts': [
+        '{query}',
+
+        'Did that appear in the video?'
+    ]},
+
+    {'type': '20240304v1', 'prompts': [
+        'Is there a checked shirt in this video?',
+
+        # 'Did that appear in the video?'
     ]}
 ]
 

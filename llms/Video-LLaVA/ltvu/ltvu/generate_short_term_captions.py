@@ -325,7 +325,7 @@ if __name__ == '__main__':
     p_clips_dir = Path('/data/datasets/ego4d_data/v2/clips_320p-non_official')
 
     if args.submitit:
-        from slurm.scripts.submitter import Submitter, get_logger, wait
+        from slurm.submitter import Submitter, get_logger, wait
         Path('./ltvu/slurm/logs').mkdir(parents=True, exist_ok=True)
         ngpus = min(16, nclips)
         logger = get_logger()
