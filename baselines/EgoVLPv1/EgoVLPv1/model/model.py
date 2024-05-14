@@ -197,4 +197,17 @@ def sim_matrix(a, b, eps=1e-8):
     return sim_mt
 
 if __name__ == "__main__":
-    pass
+    states = torch.load('/data/gunsbrother/prjs/ltvu/ours/pretrained/egovlp.pth', map_location='cpu')
+    print(type(states))
+    for k in states:
+        if k != 'state_dict' and k != 'optimizer':
+            print(k)
+            print(type(states[k]))
+            print(states[k])
+            print()
+    # print(states['state_dict'].keys())
+    print(states['optimizer'].keys())
+    print(states.keys())
+    del states['config']
+    print(states.keys())
+    # torch.save(states, '/data/gunsbrother/prjs/ltvu/ours/pretrained/egovlp-config-removed.pth')

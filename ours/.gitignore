@@ -1,0 +1,10 @@
+.vscode/
+data/
+pretrained/
+lightning_logs/
+-*
+results/
+fonts/
+*.code-workspace
+*.egg-info/
+logs/

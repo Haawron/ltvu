@@ -31,32 +31,43 @@ SHORT_TERM_PROMPTS = [
 
     {'type': '20240219v0', 'prompts': [
         'What can you see in this video?',
-
         'What objects are there that help in answering the question "{query}"?',
     ]},
 
     {'type': '20240301v1', 'prompts': [
         '{query}',
-
         'Did that appear in the video?'
     ]},
 
     {'type': '20240304v1', 'prompts': [
-        'Is there a checked shirt in this video?',
+        'Describe the video.',
+        'Can you answer "{query}"?'
+    ]},
 
-        # 'Did that appear in the video?'
-    ]}
+    {'type': '20240307v1', 'prompts': [
+        # 그나마 잘 되는 듯
+        'Describe the video in a single sentence.',
+        'Can you answer "{query}"?'
+    ]},
+
+    {'type': '20240308v1', 'prompts': [
+        'Can you answer "{query}"?'
+    ]},
+    {'type': '20240308v2', 'prompts': [
+        'Describe the video within 3 sentences.',
+        'Can you answer "{query}"?'
+    ]},
+    {'type': '20240308v3', 'prompts': [
+        # 아무 답이나 하려고 함
+        'Describe the video within 3 sentences.',
+        'What do you think a random person would answer the qustion "{query}" after watching this video?'
+    ]},
+    {'type': '20240308v4', 'prompts': [
+        # 'Can you answer the question "{query}"?',
+        # 'But I cannot find it in this video. Are you sure?',  # 이거 살짝 되는 듯? 근데 yes/no가 안 나옴
+        'What am I doing?',
+        'Are there only things in this video that are unhelpful for answering this question "{query}"?',
+    ]},
 ]
 
-TEMPLATE_CAPTION_SEQUENCE = '{start_sec}s~{end_sec}s: {caption1}'
-# ...
-# 336.0 s ~ 337.5 s: The objects that help in answering the question "what color was the hammer on the work table?" are the hammer and the work table.</s>
-# ...
-
-MID_TERM_PROMPTS = [
-    {'type': '20240219v0', 'prompts': [
-        ''
-        'Captions:\n{capseq}\n'
-        ''
-    ]}
-]
+assert len(SHORT_TERM_PROMPTS) == len(set([x['type'] for x in SHORT_TERM_PROMPTS])), 'type names are not unique'

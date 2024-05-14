@@ -9,7 +9,10 @@ from decord import VideoReader, cpu
 
 
 def get_table():
-    dfs = [pd.read_csv('EgoNLQ/csvs/nlq_train.csv'), pd.read_csv('EgoNLQ/csvs/nlq_val.csv')]
+    dfs = [
+        pd.read_csv('EgoNLQ/csvs/nlq_train_v2.csv'),
+        pd.read_csv('EgoNLQ/csvs/nlq_val_v2.csv')
+    ]
     df = pd.concat(dfs, axis=0, ignore_index=True)
     return df
 

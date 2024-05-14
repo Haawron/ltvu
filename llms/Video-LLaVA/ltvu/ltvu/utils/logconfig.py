@@ -24,17 +24,24 @@ def setup_logger(name):
     debug_handler.setLevel(logging.DEBUG)
     debug_handler.addFilter(lambda record: record.levelno == logging.DEBUG)
     # TODO: module(short) vs. name(long)
-    debug_format = RelativeTimeFormatter(
-        '%(relative_time)s | ' + debug_snippet + ' | %(module)s | %(message)s', datefmt=datefmt)
+    debug_format = '%(relative_time)s | ' + debug_snippet + ' | %(module)s | %(message)s'
+    debug_format = RelativeTimeFormatter(debug_format, datefmt=datefmt)
     debug_handler.setFormatter(debug_format)
 
     main_handler = logging.StreamHandler(sys.stdout)
     main_handler.setLevel(logging.INFO)
-    slurm_format = logging.Formatter('%(asctime)s | %(levelname)s | %(module)s | %(message)s', datefmt=datefmt)
-    main_handler.setFormatter(slurm_format)
+    main_handler.addFilter(lambda record: record.levelno == logging.INFO)
+    main_format = '%(asctime)s | %(levelname)s | %(module)s | %(message)s'
+    main_format = logging.Formatter(main_format, datefmt=datefmt)
+    main_handler.setFormatter(main_format)
+
+    error_handler = logging.StreamHandler(sys.stderr)
+    error_handler.setLevel(logging.WARNING)  # or above
+    error_handler.setFormatter(main_format)
 
     logger.addHandler(debug_handler)
     logger.addHandler(main_handler)
+    logger.addHandler(error_handler)
 
     return logger
 

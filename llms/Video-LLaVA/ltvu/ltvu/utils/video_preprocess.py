@@ -49,7 +49,7 @@ def trim_video(
     p_video: Path,
     s: TimestampType|IntervalType,
     e: TimestampType|None = None,
-    pass_if_exists=False
+    pass_if_exists = False
 ):
     if not p_video.exists():
         raise FileNotFoundError(f'{p_video} does not exist.')
@@ -58,6 +58,9 @@ def trim_video(
     itvl = Interval(s, e, idxs_per_sec=FPS)
     s, e = itvl.s, itvl.e
     eps = 1e-6
+
+    if s.sec < 0:
+        raise ValueError(f'Start time {s.sec}s is less than 0.')
     if e.sec + eps > duration_sec:
         raise ValueError(f'End time {e.sec}s is greater than video duration {duration_sec:.1f}s.')
 
@@ -72,7 +75,9 @@ def trim_video(
         '-i', str(p_video),
         '-ss', str(s.sec),
         '-t', str(itvl.l.sec),
-        '-c', 'copy', '-avoid_negative_ts', '1', '-y',
+        '-an',  # removes the audio channel
+        '-c', 'copy', '-avoid_negative_ts', '1',
+        '-y',
         str(p_splitted_video)
     ]
     # logger.debug('\n' + ' '.join(cmd))

@@ -8,7 +8,7 @@ from datetime import datetime
 from itertools import repeat
 from pathlib import Path
 
-import humanize
+# import humanize
 import numpy as np
 import psutil
 
@@ -102,7 +102,7 @@ def memory_summary():
     vmem = psutil.virtual_memory()
     msg = (
         f">>> Currently using {vmem.percent}% of system memory "
-        f"{humanize.naturalsize(vmem.used)}/{humanize.naturalsize(vmem.available)}"
+        # f"{humanize.naturalsize(vmem.used)}/{humanize.naturalsize(vmem.available)}"
     )
     print(msg)
 
