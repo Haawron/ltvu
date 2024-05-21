@@ -14,7 +14,7 @@ model_id = 'meta-llama/Llama-2-13b-chat-hf'
 batch_size = 4
 
 # fp16
-tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left', token=token)
+tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left', token=token, cache_dir='./cache_dir')
 pipeline = transformers.pipeline(
     "text-generation",
     model=model_id,
@@ -27,7 +27,7 @@ pipeline = transformers.pipeline(
 pipeline.tokenizer.pad_token = pipeline.tokenizer.eos_token
 pipeline.model.config.pad_token_id = pipeline.model.config.eos_token_id
 
-    
+
 class QADataset(torch.utils.data.Dataset):
     def __init__(self, qa_annotations, start, end):
         self.qa_annotations = qa_annotations
@@ -53,10 +53,10 @@ No preamble, get right to the three wrong answers and present them in a list for
 
     def __len__(self):
         return len(self.qa_annotations)
-    
+
     def __getitem__(self, idx):
         return self.lm_inputs[idx]
-    
+
     def get_data(self, idx):
         return self.qa_annotations[idx]
 
@@ -102,7 +102,7 @@ if __name__ == "__main__":
             print(gen_result)
 
     print(f'#{len(res)} / {len(dataset)} samples generated!')
-    
+
     if args.start is not None and args.end is not None:
         with open(f'tmp/annotations.EgoTimeQA_{args.start}_{args.end}.json', 'w') as f:
             json.dump(res, f)

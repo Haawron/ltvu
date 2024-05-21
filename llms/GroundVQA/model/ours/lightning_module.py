@@ -11,12 +11,14 @@ from torch.optim.lr_scheduler import OneCycleLR
 from eval import calc_metrics
 from eval_nlq import ReferringRecall
 
+from .model import GroundVQA
+
 
 class TestLightningModule(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path, cache_dir='./cache_dir')
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = instantiate(config.model, max_v_len=config.dataset.max_v_len)
 
@@ -72,9 +74,9 @@ class LightningModule(pl.LightningModule):
     def __init__(self, config, total_steps):
         super().__init__()
         self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path, cache_dir='./cache_dir')
         self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = instantiate(config.model, max_v_len=config.dataset.max_v_len)
+        self.model: GroundVQA = instantiate(config.model, max_v_len=config.dataset.max_v_len)
         self.nlq_evaluator = ReferringRecall(
             dataset="ego4d",
             gt_file=config.dataset.nlq_val_anno
@@ -85,15 +87,19 @@ class LightningModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         total_loss, ce_loss, time_loss = self.model(**batch)
         self.log('total_loss', total_loss, rank_zero_only=True)
-        self.log('ce_loss', ce_loss, rank_zero_only=True)
-        self.log('time_loss', time_loss, rank_zero_only=True)
+        if not self.config.model.ignore_decoder:
+            self.log('ce_loss', ce_loss, rank_zero_only=True)
+            self.log('time_loss', time_loss, rank_zero_only=True)
         return {
             'loss': total_loss,
         }
 
     def validation_step(self, batch, batch_idx):
         nlq_results, answer_tokens = self.model.generate(**batch)
-        pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
+        if not self.config.model.ignore_decoder:
+            pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
+        else:
+            pred_answer = [''] * len(batch['video_id'])
         return {
             'question': batch['q_text'],
             'video_id': batch['video_id'],
@@ -291,3 +297,14 @@ class LightningModule(pl.LightningModule):
             }
         else:
             return optimizer
+
+    def on_before_optimizer_step(self, optimizer, optimizer_idx: int) -> None:
+        unintended_no_grad_captured = False
+        for n, p in self.model.named_parameters():
+            if p.requires_grad and p.grad is None:
+                print(f'{n} [{p.shape}] requires grad but got None')
+                unintended_no_grad_captured = True
+        if unintended_no_grad_captured:
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+            raise ValueError("No gradients")

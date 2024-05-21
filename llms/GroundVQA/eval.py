@@ -6,7 +6,6 @@ from pprint import pprint
 from typing import List, Dict, Any
 
 # import bert_score
-import sentence_transformers
 from nltk.translate.meteor_score import meteor_score
 from rouge_score.rouge_scorer import RougeScorer
 from rouge_score.tokenize import tokenize

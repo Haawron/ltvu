@@ -13,5 +13,6 @@
         "data/",
         "pretrained/",
         "notebooks/", "*.ipynb",
+        "hub/"
     ]
 }

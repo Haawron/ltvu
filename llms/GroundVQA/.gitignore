@@ -171,3 +171,6 @@ checkpoints/
 cache_dir/
 analysis/
 GroundVQA/
+# symlinks
+soyeonhong
+checkpoints

@@ -10,13 +10,15 @@ python=/home/ltvu/anaconda3/envs/ltvu/bin/python
 modulename='ltvu.models.without_rgb.lightning_modules'
 random_unused_port=$(shuf -i 10000-65535 -n 1)
 
-if [ -z "$SLURM_CPUS_ON_NODE" ]; then
-    SLURM_CPUS_ON_NODE=1
-fi
+# remove all .pyc files
+find . -type d \( -path ./results -o -path ./data  \) -prune -false -o -name '*.pyc' | while read -s filename; do
+    rm $filename
+done
+
 if [ -z "$SLURM_GPUS_ON_NODE" ]; then
     python -Bm ${modulename} "${@:1}"
 else
-    OMP_NUM_THREADS=$SLURM_CPUS_ON_NODE torchrun \
+    OMP_NUM_THREADS=$(nproc) torchrun \
     --nnodes=1 \
     --master-port=$random_unused_port \
     --nproc_per_node=$SLURM_GPUS_ON_NODE \

@@ -8,3 +8,5 @@ fonts/
 *.code-workspace
 *.egg-info/
 logs/
+hub/
+hub

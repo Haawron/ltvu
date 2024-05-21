@@ -22,13 +22,17 @@ class BaseDataset(Dataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__()
         self.split = split
-        self.video_features = h5py.File(os.path.join(data_dir, feature_type + '.hdf5'), 'r')
+        self.video_features = None
         self.annotations = json.loads(Path(os.path.join(data_dir, f'annotations.{split}.json')).read_text())
         self.max_v_len = max_v_len
+        self.load_data(data_dir, feature_type)
         print(f'{split} set: {len(self.annotations)}')
 
     def __len__(self):
         return len(self.annotations)
+
+    def load_data(self, data_dir, feature_type):
+        self.video_features = h5py.File(os.path.join(data_dir, feature_type + '.hdf5'), 'r')
 
     def _get_video_feature(self, video_id):
         video_feature = torch.from_numpy(self.video_features[video_id][:])
@@ -45,6 +49,7 @@ class BaseDataset(Dataset):
 class NLQDataset(BaseDataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__(data_dir, split, feature_type, max_v_len)
+        self.load_data(data_dir, feature_type)
 
     def __getitem__(self, index):
         video_id = self.annotations[index]['video_id']
@@ -88,9 +93,58 @@ class NLQDataset(BaseDataset):
         }
 
 
+class NLQDatasetOnLLaVA(NLQDataset):
+    def __init__(self, data_dir, split, feature_type, max_v_len):
+        super().__init__(data_dir, split, feature_type, max_v_len)
+        self.p_llava_features_dir = Path('/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq/llava-v1.6-34b')
+        self.p_llava_features = list(self.p_llava_features_dir.glob('*.pt'))
+        # TODO: pt 파일 뭉치기
+
+        sample_clip_uid = 'f06d1935-550f-4caa-909c-b2db4c28f599'
+        self.annotations = [a for a in self.annotations if a['video_id'] == sample_clip_uid]
+        self.annotations = self.annotations
+        self.p_llava_features = [Path(f'/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq-sample/{sample_clip_uid}.pt')]
+
+        # FIXME: hard-coded
+        self.llava_feature_data = torch.load(self.p_llava_features[0], map_location='cpu')
+        self.load_data(data_dir, feature_type)
+
+    def __getitem__(self, index):
+        index = 0  # FIXME: hard-coded
+        FPS = 30
+        llava_feature_stride_sec = 30.  # TODO: 이거 parameterize
+        llava_feature_stride_frame = llava_feature_stride_sec * FPS
+        # TODO: 인풋 옵션
+            # z_init vs. z_answer vs. z_all (vs. z_init[:non_pad]; 이렇게 안 뽑아서 아예 불가)
+                # vs. answer -> token (-> Sentence Embedding)
+                # vs. (answer, query) -> token (-> Cross Embedding)
+            # global vs. local vs. both
+        output: dict = super().__getitem__(index)
+        T_vfeat, D_vfeat = output['v_feat'].shape
+        # p_llava_feature = self.p_llava_features[index]
+        # llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
+        llava_feature_data = self.llava_feature_data
+        llava_feature = []
+        for frame_idx, (num_in_tokens, num_out_tokens), z_init, z_answer in llava_feature_data:
+            llava_feature.append(z_init.squeeze())   # [D_llava=4096(8B) or 7168(34B)]
+        diff_frame = llava_feature_data[1][0] - llava_feature_data[0][0]  # 300 = 10s
+        llava_feature_stride_index = diff_frame / llava_feature_stride_frame  # 3
+        T_llava = len(llava_feature_data)
+        num_valid_llava_features = math.ceil(T_llava / llava_feature_stride_index)
+        llava_feature = torch.stack(llava_feature)  # [T_llava, D_llava]
+        D_llava, dtype = llava_feature.shape[-1], llava_feature.dtype
+        llava_feature = llava_feature[None, None].float()  # [1, 1, T_llava, D_llava]
+        llava_feature = F.interpolate(llava_feature, size=(num_valid_llava_features, D_llava), mode='nearest')
+        llava_feature = F.interpolate(llava_feature, size=(T_vfeat, D_llava), mode='nearest')
+        llava_feature = llava_feature.squeeze([0, 1]).to(dtype=dtype)  # [T_vfeat, D_llava]
+        output['llava_feat'] = llava_feature
+        return output
+
+
 class QADataset(BaseDataset):
     def __init__(self, data_dir, split, feature_type, max_v_len, qa_type, CloseQA_weight=50):
         super().__init__(data_dir, split, feature_type, max_v_len)
+        self.load_data(data_dir, feature_type)
         self.qa_type = qa_type  # CloseQA, OpenQA, Mixed
         self.choice_indices = ['A', 'B', 'C', 'D']
         self.CloseQA_weight = CloseQA_weight
@@ -190,7 +244,8 @@ class JointDataset(ConcatDataset):
             'sample_ratio': [b['sample_ratio'] for b in batch],
             'a_text': answer,
             'labels': labels,
-            'task': [b['task'] for b in batch]
+            'task': [b['task'] for b in batch],
+            'llava_feat': torch.stack([b['llava_feat'] for b in batch]) if 'llava_feat' in batch[0] else None,
         }
 
         return result
@@ -206,15 +261,21 @@ class JointDataModule(pl.LightningDataModule):
         self.config = config
 
     def setup(self, stage=None):
+        if self.config.get('additional_feature_type', '') == 'llava':
+            DatasetClassForNLQ = NLQDatasetOnLLaVA
+        else:
+            DatasetClassForNLQ = NLQDataset
+
         CloseQA_weight = self.config.get('closeqa_weight', 50)
         print(f'CloseQA percentage: {CloseQA_weight}%')
-        self.train_dataset = JointDataset([
+
+        self.train_dataset = JointDataset(
+            [
                 QADataset('data/unified', train_split, self.config.feature_type, self.config.max_v_len, 'Mixed', CloseQA_weight)
-                for train_split in self.config.qa_train_splits
-            ] + [
-                NLQDataset('data/unified', train_split, self.config.feature_type, self.config.max_v_len)
-                for train_split in self.config.nlq_train_splits
-            ],
+                for train_split in self.config.qa_train_splits]
+            + [
+                DatasetClassForNLQ('data/unified', train_split, self.config.feature_type, self.config.max_v_len)
+                for train_split in self.config.nlq_train_splits],
             self.config.tokenizer_path
         )
 
@@ -225,7 +286,9 @@ class JointDataModule(pl.LightningDataModule):
             elif split == 'QaEgo4D_test_close':
                 test_datasets.append(QADataset('data/unified', split, self.config.feature_type, self.config.max_v_len, 'CloseQA'))
             elif split in ['NLQ_val', 'NLQ_test_unannotated']:
-                test_datasets.append(NLQDataset('data/unified', split, self.config.feature_type, self.config.max_v_len))
+                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len))
+            elif split in ['NLQ_train']:  # for debug
+                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len))
             else:
                 print(split)
                 raise NotImplementedError
@@ -243,6 +306,7 @@ class JointDataModule(pl.LightningDataModule):
             drop_last=True,
             num_workers=self.config.num_workers,
             collate_fn=self.train_dataset.collate_fn,
+            prefetch_factor=4,
             pin_memory=True,
             persistent_workers=True
         )

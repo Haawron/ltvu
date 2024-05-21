@@ -75,8 +75,8 @@ def evaluate_topk_recalls(
     results = {}
     for k in ks:
         for thres in recall_threses:
-            results[f'iogt>={thres} R@{k:02d}'] = (iogts[:, :k] > thres).any(axis=1).mean().round(4)
-            results[f'iou>={thres} R@{k:02d}'] = (ious[:, :k] > thres).any(axis=1).mean().round(4)
+            results[f'iogt>={thres} R@{k:02d}'] = (iogts[:, :k] > thres).any(axis=1).mean()
+            results[f'iou>={thres} R@{k:02d}'] = (ious[:, :k] > thres).any(axis=1).mean()
     return results, {
         'iogts': iogts,
         'ious': ious,

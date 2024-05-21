@@ -1,5 +1,6 @@
 import os
 import json
+from typing import Literal
 from pathlib import Path
 
 import torch
@@ -40,24 +41,32 @@ class EgoNLQRawDataset(torch.utils.data.Dataset):
     def __init__(self,
         tokenizer: PreTrainedTokenizer,
         p_nlq_csvs_dir = Path('data/Ego4D/EgoNLQ/csvs'),
-        split = 'train',
+        split: Literal['train', 'val'] = 'train',
         max_t = 256,  # T, GVQA는 1200 씀
         max_l = 22,  # L
         caption_stride_sec = 2,
-        proposal_mode = False, proposal_width_sec = 30.,
+        proposal_mode = False, proposal_width_sec = 30., proposal_width_sec_train = None,
+        proposal_jitter_on_train = False,
+        gather_consecutive_captions_factor: int|None = None,
         gather_consecutive_duplicated_captions = False,
     ):
+        rank_prefix = f'[rank: {r}] ' if (r:=os.environ.get('RANK', '')) else ''
         self.p_nlq_csvs_dir = p_nlq_csvs_dir
         self.split = split
         self.tokenizer = tokenizer
         self.max_t = max_t
         self.max_l = max_l
         self.caption_stride_sec = caption_stride_sec
-        p_caps_dir = Path('data/Ego4D-processed/captions/VideoRecap')
+        self.p_caps_dir = Path('data/Ego4D-processed/captions/VideoRecap')
         self.proposal_mode = proposal_mode
         self.proposal_width_sec = proposal_width_sec
-        self.p_cap = p_caps_dir / f'caption_{self.caption_stride_sec:d}s/{split}/VideoRecap_{split}_gathered.json'
+        self.proposal_width_sec_train = proposal_width_sec_train or proposal_width_sec
+        self.proposal_jitter_on_train = proposal_jitter_on_train
+        # self.p_cap = self.p_caps_dir / f'caption_{self.caption_stride_sec:d}s/{split}/VideoRecap_{split}_gathered.json'
+        self.p_cap = self.p_caps_dir / f'VideoRecap_{self.caption_stride_sec:d}s_{split}_gathered.json'
+        print(rank_prefix + f'Loading captions from {self.p_cap}')
         self.p_nlq = self.p_nlq_csvs_dir / f'nlq_{self.split}_v2.csv'
+        self.gather_consecutive_captions_factor = gather_consecutive_captions_factor
         self.gather_consecutive_duplicated_captions = gather_consecutive_duplicated_captions
 
         # load data
@@ -65,14 +74,13 @@ class EgoNLQRawDataset(torch.utils.data.Dataset):
         self.caps = {c['clip_uid']: c for c in _caps['clips'] if 'clip_uid' in c}
         _df = pd.read_csv(self.p_nlq)
         self.df_nlq = _df[_df['clip_uid'].isin(self.caps.keys())].reset_index(drop=True)
-        rank_prefix = f'[rank: {r}] ' if (r:=os.environ.get('RANK', '')) else ''
         print(rank_prefix + f'Loaded {len(self.df_nlq)} samples from {self.p_nlq}')
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
     def sanitize_captions(self, captions: pd.Series) -> pd.Series:
         return (
-            captions
+                captions
             .str.replace(r'^[cC] ', '#C C ', regex=True)
             .str.replace(r'\s+', ' ', regex=True)  # remove duplicated spaces
             .str.replace(r'\b(\w\w+)\b\s+\1\b', r'\1', regex=True)  # remove duplicated words
@@ -138,18 +146,38 @@ class EgoNLQRawDataset(torch.utils.data.Dataset):
         query = row['query']
         clip_duration = row['duration_sec']
         s, e = row[['q_clip_start_sec', 'q_clip_end_sec']].values
+        caption_stride_sec = self.caption_stride_sec
 
         df_caps = pd.DataFrame(self.caps[clip_uid]['captions'])
         df_caps['text'] = self.sanitize_captions(df_caps['text'])
+        if self.gather_consecutive_captions_factor is not None:
+            _s = self.gather_consecutive_captions_factor
+            new_caps_records = []
+            for i in range(0, len(df_caps), _s):
+                rows = df_caps[i:i+_s]
+                new_caps_records.append({
+                    'start': rows['start'].min(),
+                    'end': rows['end'].max(),
+                    'text': '. '.join(rows['text']) + '.',
+                })
+            df_caps = pd.DataFrame(new_caps_records)
+            caption_stride_sec *= _s
         if self.gather_consecutive_duplicated_captions:
             df_caps = self.suppress_df_caps(df_caps, clip_duration)
         gt_segment_sec = torch.tensor([s, e])
         if self.proposal_mode:
             c = (s + e) / 2
-            w = self.proposal_width_sec
-            gt_segment = torch.tensor([c - w/2, c + w/2]) / self.caption_stride_sec
+            wt = self.proposal_width_sec_train
+            if self.proposal_jitter_on_train and self.split == 'train':
+                c += np.random.uniform(-wt/2, wt/2)
+                wt *= np.random.uniform(.8, 1.2)
+                wt = np.clip(wt, 2., clip_duration)
+            gt_segment = torch.tensor([c - wt/2, c + wt/2]) / caption_stride_sec
         else:
-            gt_segment = gt_segment_sec / self.caption_stride_sec
+            c = (s + e) / 2
+            w = np.clip(e - s, 2*caption_stride_sec, clip_duration)
+            c = np.clip(c, w/2, clip_duration - w/2)
+            gt_segment = torch.tensor([c - w/2, c + w/2]) / caption_stride_sec
         return {
             'clip_uid': clip_uid,
             'video_uid': video_uid,
@@ -160,12 +188,14 @@ class EgoNLQRawDataset(torch.utils.data.Dataset):
             'gt_start_sec': s,  # in seconds
             'gt_end_sec': e,  # in seconds
 
-            'query_tokens': self.tokenize(query),
-            'captions_tokens': self.tokenize_captions(df_caps['text'].tolist()),
+            'query_tokens': self.tokenize(query),  # [L]
+            'captions_tokens': self.tokenize_captions(df_caps['text'].tolist()),  # [T, L]
+
             # for train
             'gt_segment': gt_segment,  # effective indices
             # for valid
             'gt_segment_sec': gt_segment_sec,
+            # 'gt_segment_sec_orig': gt_segment_sec_orig,
         }
 
 
@@ -175,7 +205,7 @@ class EgoNLQRawDataModule(L.LightningDataModule):
         print(f'\n======== Testing {cls.__name__} ========')
         from pprint import pprint
         tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-        dm = cls(tokenizer=tokenizer, max_t=256, max_l=22)
+        dm = cls(ds_kws=dict(tokenizer=tokenizer, max_t=256, max_l=22))
         dm.setup()
         pprint(len(dm.train_ds))
         pprint(len(dm.val_ds))
@@ -189,33 +219,22 @@ class EgoNLQRawDataModule(L.LightningDataModule):
 
     def __init__(
         self,
-        # DS params
-        tokenizer = None,
-        caption_stride_sec = 2,
-        proposal_mode = False, proposal_width_sec = 30.,
-        max_t = 256,
-        max_l = 22,
-        # DL params
-        batch_size = 4,
-        **dl_params,
+        ds_kws: dict = dict(),
+        dl_kws: dict = dict(),
     ):
         super().__init__()
-        assert tokenizer is not None, 'tokenizer is required'
-        self.batch_size = batch_size
-        self.tokenizer = tokenizer
         self.ds_params = dict(
-            tokenizer=tokenizer, max_t=max_t, max_l=max_l,
-            caption_stride_sec=caption_stride_sec,
-            proposal_mode=proposal_mode, proposal_width_sec=proposal_width_sec,
             gather_consecutive_duplicated_captions=False,
         )
         self.dl_params = dict(
-            batch_size=batch_size, drop_last=True,
-            num_workers=8, prefetch_factor=2,
-            persistent_workers=False, pin_memory=False,
+            persistent_workers=False, pin_memory=False, drop_last=False,
             collate_fn=self.collate_fn,
-        ) | dl_params
-        self.save_hyperparameters()
+        )
+        self.ds_params |= ds_kws
+        self.dl_params |= dl_kws
+        self.save_hyperparameters(ignore=[
+            'ds_kws', 'dl_kws',
+        ])
 
     @staticmethod
     def collate_fn(batch):
@@ -225,17 +244,32 @@ class EgoNLQRawDataModule(L.LightningDataModule):
         return batch
 
     def prepare_data(self):
-        pass
+        s = self.ds_params.get('caption_stride_sec', 2)
+        p_caps_dir = Path('data/Ego4D-processed/captions/VideoRecap')
+        p_caps_orig_dir = p_caps_dir / f'caption_{s:d}s'
+        for split in ['train', 'val']:
+            p_cap_gathered = p_caps_dir / f'VideoRecap_{s:d}s_{split}_gathered.json'
+            if not p_cap_gathered.exists():
+                print(f'Gathering captions from {p_caps_orig_dir / split} to {p_cap_gathered}')
+                caps = []
+                for p_cap in (p_caps_orig_dir / split).glob('*.json'):
+                    if 'gathered' in p_cap.stem.lower():
+                        continue
+                    cap = json.load(p_cap.open())
+                    caps.append(cap)
+                json.dump({'clips': caps}, p_cap_gathered.open('w'))
 
     def setup(self, stage=None):
         self.train_ds = EgoNLQRawDataset(split='train', **self.ds_params)
         self.val_ds = EgoNLQRawDataset(split='val', **self.ds_params)
+        self.train_dl = torch.utils.data.DataLoader(self.train_ds, shuffle=True, **self.dl_params)
+        self.val_dl = torch.utils.data.DataLoader(self.val_ds, shuffle=False, **self.dl_params)
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.train_ds, shuffle=True, **self.dl_params)
+        return self.train_dl
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_ds, shuffle=False, **self.dl_params)
+        return self.val_dl
 
     test_dataloader = val_dataloader
     predict_dataloader = val_dataloader

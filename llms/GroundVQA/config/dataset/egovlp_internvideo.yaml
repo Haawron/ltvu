@@ -11,5 +11,5 @@ closeqa_weight: 50
 
 tokenizer_path: google/flan-t5-small
 
-num_workers: 4
+num_workers: 16
 batch_size: 16

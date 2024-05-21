@@ -610,7 +610,7 @@ class NLQHead(nn.Module):
             if gt_labels is None:
                 B = len(gt_segments)
                 labels = torch.zeros((B, 1), dtype=torch.int64, device=feat.device)  # (B,)
-                gt_labels = F.one_hot(labels, num_classes=1)  # B x [N_j=1, K=1]
+                gt_labels = F.one_hot(labels, num_classes=1)  # [B, N_j=1, K=1]
             # B x [N_j=1,] -> B x [∑T, K=1]
             # B x [N_j=1, 2] -> B x [∑T, 2]
             gt_cls_labels, gt_offsets = self.label_points(points, gt_segments, gt_labels, 1)
@@ -770,7 +770,7 @@ class NLQHead(nn.Module):
         # fpn_masks: F x [B, T_i], just padding masks for each level, 1 for valid
         # out_*: F x [B, T_i, K or 2]
         # gt_* : B x [∑T, K or 2]
-        valid_mask = torch.cat(fpn_masks, dim=1)  # [B, ∑T]
+        valid_mask = torch.cat(fpn_masks, dim=1)  # [B, ∑T], all ones when no FPN + NLQ
 
         # 1. classification loss
         gt_cls = torch.stack(gt_cls_labels)  # [B, ∑T, K=1]
@@ -778,7 +778,7 @@ class NLQHead(nn.Module):
 
         # update the loss normalizer
         num_pos = pos_mask.sum().item()
-        self.loss_normalizer = self.loss_normalizer_momentum * self.loss_normalizer + (
+        self.loss_normalizer: float = self.loss_normalizer_momentum * self.loss_normalizer + (
                 1 - self.loss_normalizer_momentum) * max(num_pos, 1)
 
         # gt_cls is already one hot encoded now, simply masking out
@@ -791,12 +791,13 @@ class NLQHead(nn.Module):
         gt_target += self.train_label_smoothing / (num_classes + 1)
 
         # focal loss
-        cls_loss = sigmoid_focal_loss(
+        cls_losses = sigmoid_focal_loss(
             torch.cat(out_cls_logits, dim=1)[valid_mask],
             gt_target,
-            reduction='sum'
-        )
-        cls_loss /= self.loss_normalizer
+            reduction='none'
+        )  # [B x ∑T, K=1]
+        cls_losses /= self.loss_normalizer
+        cls_loss = cls_losses.sum()
 
         # 2. regression using IoU/GIoU loss (defined on positive samples)
         pred_offsets = torch.cat(out_offsets, dim=1)[pos_mask]  # F x [B, T_i, 2] -> [B, ∑T, 2] -> [#Pos, 2]
@@ -812,7 +813,7 @@ class NLQHead(nn.Module):
             )
             reg_loss /= self.loss_normalizer
 
-        if self.train_loss_weight > 0:
+        if self.train_loss_weight > 0:  # always True
             loss_weight = self.train_loss_weight
         else:
             loss_weight = cls_loss.detach() / max(reg_loss.item(), 0.01)
@@ -820,8 +821,9 @@ class NLQHead(nn.Module):
         # return a dict of losses
         final_loss = cls_loss + reg_loss * loss_weight
         return {'cls_loss': cls_loss,
+                'cls_losses': cls_losses,
                 'reg_loss': reg_loss,
-                'final_loss': final_loss}
+                'final_loss': final_loss,}
 
     @torch.no_grad()
     def inference(
@@ -914,9 +916,11 @@ class NLQHead(nn.Module):
         segs_all, scores_all, cls_idxs_all = [
             torch.cat(x) for x in [segs_all, scores_all, cls_idxs_all]
         ]
-        results = {'segments': segs_all,
-                   'scores': scores_all,
-                   'labels': cls_idxs_all}
+        results = {
+            'segments': segs_all,
+            'scores': scores_all,
+            'labels': cls_idxs_all,
+        }
 
         return results
 

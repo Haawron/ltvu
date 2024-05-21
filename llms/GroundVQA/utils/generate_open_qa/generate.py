@@ -18,7 +18,7 @@ model_id = "/root/.cache/huggingface/models--meta-llama--Llama-2-13b-chat-hf"
 batch_size = 4
 
 # fp16
-tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left', token=token)
+tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left', token=token, cache_dir='./cache_dir')
 pipeline = transformers.pipeline(
     "text-generation",
     model=model_id,
@@ -31,7 +31,7 @@ pipeline = transformers.pipeline(
 pipeline.tokenizer.pad_token = pipeline.tokenizer.eos_token
 pipeline.model.config.pad_token_id = pipeline.model.config.eos_token_id
 
-    
+
 class NarrationDataset(torch.utils.data.Dataset):
     def __init__(self, clip_narrations):
         self.prompt = """<s>[INST] <<SYS>>
@@ -68,7 +68,7 @@ C pours hot water from the frying pan in his left hand into the bowl in his righ
                     'n_narration': len(sampled)
                 })
                 idx += len(sampled)
-            
+
         return sampled_narrations
 
     def _sample_narrations(self, narrations, start, max_n=5, max_timespan=30):
@@ -77,22 +77,22 @@ C pours hot water from the frying pan in his left hand into the bowl in his righ
             end -= 1
         end = np.random.choice(np.arange(start, end), 1)[0] + 1
         return narrations[start:end]
-    
+
     def __len__(self):
         return len(self.narrations)
-    
+
     def __getitem__(self, idx):
         return self.narrations[idx]['lm_input']
-    
+
     def get_clip_uid(self, idx):
         return self.narrations[idx]['clip_uid']
-    
+
     def get_start_sec(self, idx):
         return self.narrations[idx]['start_sec']
 
     def get_end_sec(self, idx):
         return self.narrations[idx]['end_sec']
-    
+
     def get_narrations(self, idx):
         return self.narrations[idx]['narrations']
 
@@ -154,7 +154,7 @@ if __name__ == "__main__":
             })
         except:
             errors += 1
-            continue 
-    
+            continue
+
     with open(save_path, 'w') as f:
         json.dump(res, f)

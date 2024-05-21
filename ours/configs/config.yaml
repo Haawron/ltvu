@@ -1,0 +1,29 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: ./results/without_rgb/mips-trained/${replace_slash:${litmodule.language_model_name}}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+experiment:
+  prediction_split: 'val'
+  ckpt_path_test: null
+  ckpt_path_resume: null
+
+litmodule:
+  _target_: ltvu.models.without_rgb.lightning_modules.TextOnlyNLQLitModule
+  language_model_name: 'google/flan-t5-base'
+
+trainer:
+  # _target_: lightning.Trainer
+  gradient_clip_val: 1.
+  precision: 'bf16-mixed'
+  max_epochs: 10
+  strategy: 'auto'
+  deterministic: True
+  enable_model_summary: False
+  accumulate_grad_batches: null
+  logger: null
+  callbacks: null
+  enable_progress_bar: null
+  num_sanity_val_steps: null

@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from typing_extensions import override
 
@@ -53,6 +54,7 @@ class JSONPredictionWriter(BasePredictionWriter):
                 json.dump(jsons, self.p_json.open('w'))
                 print(f'JSONs merged and saved to {self.p_json}')
                 print(f'Number of entries: {num_entries}, Total: {len(jsons)}')
+                shutil.rmtree(self.p_json_tmp_dir)
             torch.distributed.barrier()
 
     @override

@@ -1,10 +1,15 @@
+import os
 import re
 import math
 from argparse import ArgumentParser, Namespace
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import hydra
 import torch
 import pytorch_lightning as pl
+
 from omegaconf import DictConfig, open_dict
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor, StochasticWeightAveraging
 from pytorch_lightning.plugins import DDPPlugin
@@ -72,7 +77,7 @@ def _adjust_ddp_config(trainer_cfg):
         strategy = 'ddp'  # Select ddp by default
     if strategy == 'ddp':
         trainer_cfg['strategy'] = DDPPlugin(
-            find_unused_parameters=trainer_cfg['find_unused_parameters'],
+            find_unused_parameters=False,#trainer_cfg['find_unused_parameters'],
             gradient_as_bucket_view=True)
     return trainer_cfg
 
@@ -118,10 +123,6 @@ def train(config: DictConfig):
             trainer.test(
                 model, data.test_dataloader(),
             )
-            # import itertools
-            # trainer.test(
-            #     model, itertools.islice(data.test_dataloader(), 4),
-            # )
     else:  # training
         model_checkpoint = []
         if 'QaEgo4D_test' in config.dataset.test_splits:

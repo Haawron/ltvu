@@ -1,0 +1,10 @@
+defaults:
+  - egovlp_internvideo
+  - _self_
+
+additional_feature_type: 'llava'
+# llava_dir: '/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq/llava-v1.6-34b'
+# llava_split: 'global'  # 'local'
+# load_feature: True
+# load_capion: False
+# load_partial: 700  # 700 clips out of 2017(v2) clips as llava extraction has not been finished

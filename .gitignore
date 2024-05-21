@@ -191,3 +191,9 @@ llms/Video-LLaVA/videollava/serve/examples/sample_demo_13.mp4
 croppers/Grounded-Segment-Anything/VISAM/visam.gif
 tasks/Ego4D/ego4d.json
 *.pth
+*.mp4
+*.tar.gz
+*.tar
+checkpoints/
+cache_dir/
+cache/

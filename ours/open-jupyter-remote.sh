@@ -14,7 +14,8 @@ source ~/.zshrc
 conda activate $CONDA_ENV_INHERITED
 jupyter kernelspec list
 
-TOKEN=$(openssl rand -hex 32)
+# TOKEN=$(openssl rand -hex 32)
+TOKEN='89218594e77abd3a0b65943f352cc3fe2496e739ca523bd49b3ef1c26d39c2f0'
 TMPDIR=/tmp/$USER
 mkdir -p $TMPDIR
 PATH_JUPYTER_LOG=$TMPDIR/jupyter_log.txt

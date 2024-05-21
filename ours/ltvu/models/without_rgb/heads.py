@@ -1,4 +1,5 @@
 from collections import namedtuple
+from typing import Literal
 
 import numpy as np
 import torch
@@ -20,11 +21,46 @@ from ltvu.models.heads.nlq_head import (
 from ltvu.utils import nms_1d_centers
 
 
-def build_bert_encoder(num_layers=3) -> DistilBertModel:
-    model: DistilBertModel = AutoModel.from_pretrained('distilbert-base-uncased')
-    model.embeddings.requires_grad_(False)
-    model.transformer.layer = model.transformer.layer[:num_layers]
-    return model
+class PartialDistilBertModel(nn.Module):
+    def __init__(self, num_layers=1, max_ctx_len=256, enable_input_linear=False, in_dim=768):
+        super().__init__()
+        self.bert: DistilBertModel = AutoModel.from_pretrained('distilbert-base-uncased')
+        self.bert.transformer.layer = self.bert.transformer.layer[:num_layers]
+        self.bert_dim = self.bert.config.dim
+        self.max_ctx_len = max_ctx_len
+        if max_ctx_len+1 > self.bert.config.max_position_embeddings:
+            self.bert.resize_position_embeddings(max_ctx_len+1)
+        if enable_input_linear:
+            # self.num_principals = 256  # P
+            self.linear = nn.Linear(in_dim, self.bert_dim)
+            self.act = nn.GELU()
+            # self.linear = nn.Linear(in_dim, self.num_principals)
+            # w = self.bert.embeddings.word_embeddings.weight.detach()  # [V, D]
+            # w -= w.mean(dim=0, keepdim=True)
+            # _, _, self.vmat = torch.svd(w)
+            # self.principals = nn.Parameter(
+            #     torch.randn(self.bert_dim, self.num_principals))  # [D, P]
+        else:
+            assert in_dim == self.bert.config.dim  # 768
+        self.bert.embeddings.word_embeddings = nn.Identity()
+        self.enable_input_linear = enable_input_linear
+
+    # def init_weights(self):
+    #     super().init_weights()
+    #     if self.enable_input_linear:
+    #         self.principals.data = self.vmat[:, :self.num_principals]
+
+    def forward(self, inputs_embeds=None, **kwargs):
+        if self.enable_input_linear and inputs_embeds is not None:
+            res = inputs_embeds
+            # input_id_logits = self.linear(inputs_embeds)  # [B, L, P]
+            # input_id_attns = F.softmax(input_id_logits, dim=-1)  # [B, L, P]
+            # inputs_embeds = torch.einsum('blp, dp -> bld', input_id_attns, self.principals)
+            inputs_embeds = self.linear(inputs_embeds)  # [B, L, D]
+            inputs_embeds = self.act(inputs_embeds)
+            # inputs_embeds = inputs_embeds / inputs_embeds.norm(dim=-1, keepdim=True)
+            inputs_embeds = res + inputs_embeds
+        return self.bert.forward(inputs_embeds=inputs_embeds, **kwargs)
 
 
 def build_valid_masked_conv1d(in_dim, out_dim, kernel_size, bias=True):
@@ -71,17 +107,40 @@ class Conv1DBlock(nn.Module):
 
 class FlatNLQHead(NLQHead):
     _NLQHeadOutput = namedtuple('_NLQHeadOutput', [
-        'segments',  # [k=5, 2], intervals in seconds???  FIXME: seconds???
+        'segments',  # [k=5, 2], intervals in seconds
         'scores',  # [k=5] probs at each point selected as top-k
         'labels',  # [k=5] 0 or 1, 1 if the point is a positive sample
     ])
+    def __init__(
+        self, *args,
+        train_cls_label_distance_smoothing = False,
+        train_cls_label_distance_smoothing_kernel: Literal['rect', 'gauss'] = 'rect',
+        train_cls_label_distance_smoothing_kernel_size = 3,
+        train_cls_label_distance_compensate = False,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.train_cls_label_distance_smoothing = train_cls_label_distance_smoothing
+        self.train_cls_label_distance_smoothing_kernel = train_cls_label_distance_smoothing_kernel
+        self.train_cls_label_distance_smoothing_kernel_size = self.ksz = \
+            train_cls_label_distance_smoothing_kernel_size  # features
+        self.train_cls_label_distance_compensate = train_cls_label_distance_compensate
+        if self.train_cls_label_distance_smoothing:
+            assert self.ksz % 2 == 1, f'The kernel size should be odd, but got {self.ksz}'
+            kernel = {
+                'rect': torch.ones(self.ksz, dtype=torch.float),
+                'gauss': torch.exp(-(torch.arange(self.ksz)-self.ksz/2).float()**2 / 2 / self.ksz**2),
+            }[self.train_cls_label_distance_smoothing_kernel]
+            kernel = kernel / kernel.sum()
+            self.register_buffer('kernel', kernel)
+
     def forward(
         self,
         z_ctx,  # [B, D, T]
         m_ctx,  # [B, T]
         gt_segment = None,  # [B, 2]
         return_loss = True,
-        return_preds = True
+        return_preds = True,
     ):
         assert return_loss or return_preds, \
             'At least one of return_loss or return_preds should be True'
@@ -111,10 +170,37 @@ class FlatNLQHead(NLQHead):
                 gt_labels,    # [B, N_b=1, K=1], all ones, basically B x N_b x K
                 1             # K=1
             )  # B x [ΣT_f=T, K=1], B x [ΣT_f=T, 2], point-wise labels and offsets
+            if self.train_cls_label_distance_smoothing:
+                # list of tensors to torch.Tensor
+                gt_cls_labels = torch.stack(gt_cls_labels).squeeze(-1)  # [B, ΣT_f=T]
+                gt_cls_labels = F.conv1d(
+                    gt_cls_labels[:, None],  # [B, 1, ΣT_f=T]
+                    self.kernel.to(dtype=gt_cls_labels.dtype)[None, None],  # [1, 1, ksz]
+                    padding=(self.ksz-1)//2
+                ).squeeze(1).unsqueeze(-1)  # [B, ΣT_f=T, K=1]
+                gt_cls_labels = [gt_cls_labels[b] for b in range(B)]
+                gt_offsets = [gt_offsets[b]+self.ksz-1 for b in range(B)]
+            # if not ((go:=torch.stack(gt_offsets))[posmask:=((gc:=torch.stack(gt_cls_labels)).sum(-1) > 0)].float() >= 0).all():  # for debugging
+            #     torch.set_printoptions(profile="full")
+            #     print(torch.cat([gc, posmask[..., None], go], dim=-1))
+            #     print(gc.shape, posmask.shape, go.shape)
             losses = self.losses(
                 fpn_masks,
                 out_cls_logits, out_offsets,
                 gt_cls_labels, gt_offsets)
+            if self.train_cls_label_distance_compensate:
+                mus = gt_segment.squeeze(1).mean(dim=-1, keepdim=True)  # [B, 1]
+                sigmas = (gt_segment[..., 1] - gt_segment[..., 0]) / 2  # [B, 1]
+                x = torch.linspace(0, T-1, T, device=z_ctx.device).unsqueeze(0)  # [1, T]
+                compensate = .5 * torch.exp(-((x - mus) / sigmas).pow(2) / 2)  # [B, T]
+                cls_loss_weights = 1. - compensate  # [B, T]
+                cls_loss_weights = T * cls_loss_weights / cls_loss_weights.sum(dim=-1, keepdim=True)  # [B, T]
+                cls_losses = rearrange(losses['cls_losses'], '(b t) 1 -> b t', b=B)  # [B, T]
+                cls_loss = (cls_losses * cls_loss_weights).mean()
+                losses['cls_loss'] = cls_loss
+                losses['final_loss'] = losses['cls_loss'] + losses['reg_loss']
+            del losses['cls_losses']
+
             result_dict['loss_dict'] = losses
             result_dict['loss'] = losses['final_loss']
 
@@ -133,13 +219,19 @@ class TXActionFormerHead(nn.Module):
         max_ctx_len = 256,
         feature_grid_stride_sec = 2,
         enable_v_emb = False,
+        num_tx_layers = 1,
+        enable_input_linear = False,
+        **head_kws,
     ):
         super().__init__()
-        # self.neck = Conv1DBlock(in_dim, in_dim, num_layers=3)
         self.max_ctx_len = max_ctx_len
-        self.cross_encoder = build_bert_encoder(num_layers=1)
+        self.cross_encoder = PartialDistilBertModel(
+            num_layers=num_tx_layers,
+            max_ctx_len=max_ctx_len,
+            enable_input_linear=enable_input_linear,
+            in_dim=in_dim)
         self.flat_actionformer_head = FlatNLQHead(
-            in_dim, max_ctx_len, feature_grid_stride_sec=feature_grid_stride_sec)
+            in_dim, max_v_len=max_ctx_len, feature_grid_stride_sec=feature_grid_stride_sec, **head_kws)
         self.v_emb = nn.Parameter(torch.randn((1, 1, in_dim))) if enable_v_emb else 0
 
     def forward(
@@ -178,6 +270,7 @@ class ActionFormerHead(nn.Module):
         max_ctx_len = 256,
         feature_grid_stride_sec = 2,
         enable_v_emb = False,
+        **kwargs,
     ):
         super().__init__()
         self.max_ctx_len = max_ctx_len
@@ -231,6 +324,7 @@ class SimilarityHead(nn.Module):
         max_ctx_len = 256,
         feature_grid_stride_sec = 2,
         pred_width_sec = 30.,
+        **kwargs,
     ):
         super().__init__()
         self.max_ctx_len = max_ctx_len
@@ -269,7 +363,7 @@ class SimilarityHead(nn.Module):
             scores[:len(idxs_)] = logit[idxs_]
             segs_sec = np.stack([centers - w / 2, centers + w / 2], axis=1)
             result_dict['preds'].append({
-                'segments': segs_sec.clip(0, T_sec).round(4).tolist(),
+                'segments': segs_sec.clip(0, T_sec).round(4).tolist(),  # [k=5, 2]
                 'scores': scores.round(4).tolist(),
             })
 
