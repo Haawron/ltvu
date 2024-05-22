@@ -3,8 +3,12 @@ defaults:
   - _self_
 
 additional_feature_type: 'llava'
-# llava_dir: '/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq/llava-v1.6-34b'
-# llava_split: 'global'  # 'local'
-# load_feature: True
-# load_capion: False
-# load_partial: 700  # 700 clips out of 2017(v2) clips as llava extraction has not been finished
+llava:
+  llava_dir: '/local_datasets/ego4d_data/v2/llava-v1.6-34b/'
+  scope: 'global'  # 'global', 'local', 'both'
+  # target_stride_sec_global: 30.
+  # target_stride_sec_local: 10.
+  load_feature: True
+  feature_aggregation: 'init'  # 'init', 'answer', 'all'
+  # load_capion: False
+  # load_partial: 700  # 700 clips out of 2017(v2) clips as llava extraction has not been finished

@@ -5,7 +5,7 @@ import math
 import json
 import random
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 import h5py
 import numpy as np
@@ -15,6 +15,7 @@ import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.dataset import Dataset
+from torch.utils.data.dataloader import default_collate
 from transformers import AutoTokenizer
 
 
@@ -22,17 +23,13 @@ class BaseDataset(Dataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__()
         self.split = split
-        self.video_features = None
+        self.video_features = h5py.File(os.path.join(data_dir, feature_type + '.hdf5'), 'r')
         self.annotations = json.loads(Path(os.path.join(data_dir, f'annotations.{split}.json')).read_text())
         self.max_v_len = max_v_len
-        self.load_data(data_dir, feature_type)
         print(f'{split} set: {len(self.annotations)}')
 
     def __len__(self):
         return len(self.annotations)
-
-    def load_data(self, data_dir, feature_type):
-        self.video_features = h5py.File(os.path.join(data_dir, feature_type + '.hdf5'), 'r')
 
     def _get_video_feature(self, video_id):
         video_feature = torch.from_numpy(self.video_features[video_id][:])
@@ -49,7 +46,6 @@ class BaseDataset(Dataset):
 class NLQDataset(BaseDataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__(data_dir, split, feature_type, max_v_len)
-        self.load_data(data_dir, feature_type)
 
     def __getitem__(self, index):
         video_id = self.annotations[index]['video_id']
@@ -80,7 +76,7 @@ class NLQDataset(BaseDataset):
         one_hot_labels = F.one_hot(labels, 1)  # (1, 1)
 
         return {
-            'video_id': video_id,
+            'video_id': video_id,  # same as clip_uid here
             'question': f"question: {question} video: ",
             'answer': 'None',
             'v_feat': video_feature,
@@ -93,58 +89,78 @@ class NLQDataset(BaseDataset):
         }
 
 
+SAMPLE_CLIP_UID = 'f06d1935-550f-4caa-909c-b2db4c28f599'
 class NLQDatasetOnLLaVA(NLQDataset):
-    def __init__(self, data_dir, split, feature_type, max_v_len):
+    def __init__(
+        self, data_dir, split, feature_type, max_v_len,
+        llava_dir: str,
+        scope: Literal['global', 'local', 'both'],
+        # target_stride_sec_global: float,
+        # target_stride_sec_local: float,
+        load_feature: bool,
+        feature_aggregation: Literal['init', 'answer', 'all']
+    ):
         super().__init__(data_dir, split, feature_type, max_v_len)
-        self.p_llava_features_dir = Path('/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq/llava-v1.6-34b')
-        self.p_llava_features = list(self.p_llava_features_dir.glob('*.pt'))
-        # TODO: pt 파일 뭉치기
-
-        sample_clip_uid = 'f06d1935-550f-4caa-909c-b2db4c28f599'
-        self.annotations = [a for a in self.annotations if a['video_id'] == sample_clip_uid]
-        self.annotations = self.annotations
-        self.p_llava_features = [Path(f'/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq-sample/{sample_clip_uid}.pt')]
-
-        # FIXME: hard-coded
-        self.llava_feature_data = torch.load(self.p_llava_features[0], map_location='cpu')
-        self.load_data(data_dir, feature_type)
+        self.p_llava_dir = Path(llava_dir)
+        valid_clip_uids = set(p.stem for p in self.p_llava_dir.glob('**/*.pt'))
+        required_clip_uids = set(a['video_id'] for a in self.annotations)
+        diff = required_clip_uids - valid_clip_uids
+        print(f'Clips not existing in LLaVA: {diff} ({len(diff)})')
+        self.annotations = [a for a in self.annotations if a['video_id'] in valid_clip_uids]
+        self.scope = scope
+        # self.target_stride_sec_global = target_stride_sec_global
+        # self.target_stride_sec_local = target_stride_sec_local
+        self.load_feature = load_feature
+        self.feature_aggregation = feature_aggregation
 
     def __getitem__(self, index):
-        index = 0  # FIXME: hard-coded
-        FPS = 30
-        llava_feature_stride_sec = 30.  # TODO: 이거 parameterize
-        llava_feature_stride_frame = llava_feature_stride_sec * FPS
         # TODO: 인풋 옵션
-            # z_init vs. z_answer vs. z_all (vs. z_init[:non_pad]; 이렇게 안 뽑아서 아예 불가)
-                # vs. answer -> token (-> Sentence Embedding)
-                # vs. (answer, query) -> token (-> Cross Embedding)
-            # global vs. local vs. both
+            # [x]: z_init vs. z_answer vs. z_all (vs. z_init[:non_pad]; 이렇게 안 뽑아서 아예 불가)
+            # [ ]: vs. answer -> token (-> Sentence Embedding)
+            # [ ]: vs. (answer, query) -> token (-> Cross Embedding)
+            # [ ]: global vs. local vs. both --> local 다루려면 파일 포맷을 제대로 정해야 함
         output: dict = super().__getitem__(index)
-        T_vfeat, D_vfeat = output['v_feat'].shape
-        # p_llava_feature = self.p_llava_features[index]
-        # llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
-        llava_feature_data = self.llava_feature_data
-        llava_feature = []
-        for frame_idx, (num_in_tokens, num_out_tokens), z_init, z_answer in llava_feature_data:
-            llava_feature.append(z_init.squeeze())   # [D_llava=4096(8B) or 7168(34B)]
-        diff_frame = llava_feature_data[1][0] - llava_feature_data[0][0]  # 300 = 10s
-        llava_feature_stride_index = diff_frame / llava_feature_stride_frame  # 3
-        T_llava = len(llava_feature_data)
-        num_valid_llava_features = math.ceil(T_llava / llava_feature_stride_index)
-        llava_feature = torch.stack(llava_feature)  # [T_llava, D_llava]
-        D_llava, dtype = llava_feature.shape[-1], llava_feature.dtype
-        llava_feature = llava_feature[None, None].float()  # [1, 1, T_llava, D_llava]
-        llava_feature = F.interpolate(llava_feature, size=(num_valid_llava_features, D_llava), mode='nearest')
-        llava_feature = F.interpolate(llava_feature, size=(T_vfeat, D_llava), mode='nearest')
-        llava_feature = llava_feature.squeeze([0, 1]).to(dtype=dtype)  # [T_vfeat, D_llava]
-        output['llava_feat'] = llava_feature
+        video_id = output['video_id']
+        p_llava_feature = self.p_llava_dir / self.scope / f'{video_id}.pt'
+        llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
+        llava_features = {}
+        llava_features[self.scope] = self._get_llava_feature(
+            llava_feature_data)[self.feature_aggregation]
+        output['llava_feat'] = llava_features
         return output
+
+    def _get_llava_feature(
+        self,
+        llava_feature_data,
+        T_target = 16,
+        # T_vfeat,
+        # target_stride_sec=30.,
+    ):
+        FPS = 30
+        llava_features = {'init': [], 'answer': [], 'all': []}
+        for frame_idx, source_scope, (num_in_tokens, num_out_tokens), z_init, z_answer in llava_feature_data:
+            z_all = (num_in_tokens * z_init + num_out_tokens * z_answer) / (num_in_tokens + num_out_tokens)
+            llava_features['init'].append(z_init.squeeze())  # [D_llava=4096(8B) or 7168(34B)]
+            llava_features['answer'].append(z_answer.squeeze())
+            llava_features['all'].append(z_all.squeeze())
+        # source_stride_frame = llava_feature_data[1][0] - llava_feature_data[0][0]  # 300 = 10s
+        # target_stride_frame = target_stride_sec * FPS
+        # target_stride_index = source_stride_frame / target_stride_frame  # 3
+        T_source = len(llava_feature_data)
+        # T_target = math.ceil(T_source / target_stride_index)
+        llava_features = {k: torch.stack(v) for k, v in llava_features.items()}
+        for k, v in llava_features.items():
+            D_llava, dtype = v.shape[-1], v.dtype
+            v = v[None, None].float()
+            v = F.interpolate(v, size=(T_target, D_llava), mode='nearest')
+            # v = F.interpolate(v, size=(T_vfeat, D_llava), mode='nearest')
+            llava_features[k] = v.squeeze([0, 1]).to(dtype=dtype)  # [T_vfeat, D_llava]
+        return llava_features
 
 
 class QADataset(BaseDataset):
     def __init__(self, data_dir, split, feature_type, max_v_len, qa_type, CloseQA_weight=50):
         super().__init__(data_dir, split, feature_type, max_v_len)
-        self.load_data(data_dir, feature_type)
         self.qa_type = qa_type  # CloseQA, OpenQA, Mixed
         self.choice_indices = ['A', 'B', 'C', 'D']
         self.CloseQA_weight = CloseQA_weight
@@ -245,8 +261,10 @@ class JointDataset(ConcatDataset):
             'a_text': answer,
             'labels': labels,
             'task': [b['task'] for b in batch],
-            'llava_feat': torch.stack([b['llava_feat'] for b in batch]) if 'llava_feat' in batch[0] else None,
         }
+        if 'llava_feat' in batch[0]:
+            result['llava_feat'] = default_collate([b['llava_feat'] for b in batch])
+            # print(result['llava_feat']['global'].shape)
 
         return result
 
@@ -261,8 +279,10 @@ class JointDataModule(pl.LightningDataModule):
         self.config = config
 
     def setup(self, stage=None):
+        ds_kws = {}
         if self.config.get('additional_feature_type', '') == 'llava':
             DatasetClassForNLQ = NLQDatasetOnLLaVA
+            ds_kws |= self.config.get('llava', {})
         else:
             DatasetClassForNLQ = NLQDataset
 
@@ -274,7 +294,7 @@ class JointDataModule(pl.LightningDataModule):
                 QADataset('data/unified', train_split, self.config.feature_type, self.config.max_v_len, 'Mixed', CloseQA_weight)
                 for train_split in self.config.qa_train_splits]
             + [
-                DatasetClassForNLQ('data/unified', train_split, self.config.feature_type, self.config.max_v_len)
+                DatasetClassForNLQ('data/unified', train_split, self.config.feature_type, self.config.max_v_len, **ds_kws)
                 for train_split in self.config.nlq_train_splits],
             self.config.tokenizer_path
         )
@@ -286,9 +306,9 @@ class JointDataModule(pl.LightningDataModule):
             elif split == 'QaEgo4D_test_close':
                 test_datasets.append(QADataset('data/unified', split, self.config.feature_type, self.config.max_v_len, 'CloseQA'))
             elif split in ['NLQ_val', 'NLQ_test_unannotated']:
-                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len))
+                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len, **ds_kws))
             elif split in ['NLQ_train']:  # for debug
-                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len))
+                test_datasets.append(DatasetClassForNLQ('data/unified', split, self.config.feature_type, self.config.max_v_len, **ds_kws))
             else:
                 print(split)
                 raise NotImplementedError

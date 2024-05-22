@@ -174,3 +174,4 @@ GroundVQA/
 # symlinks
 soyeonhong
 checkpoints
+logs/

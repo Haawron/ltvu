@@ -9,12 +9,18 @@ from model.ours.nlq_head import NLQHead
 from model.ours.ltvu.t5_with_ca_encoder import T5WithCAEncoderAndDecoder
 
 
+T_scope = Literal['global', 'local']
+# T_aggregation = Literal['init', 'answer', 'all']
+T_llava_feature = dict[T_scope, torch.Tensor]
+
+
 class GroundVQA(nn.Module):
     def __init__(
         self,
         lm_path,
         input_dim,
         model_variant: Literal['t5', 't5_ca'] = 't5',
+        t5_ca_layer_idxs = [4],
         freeze_word = False,
         max_v_len = 256,
         ignore_decoder = False
@@ -23,10 +29,11 @@ class GroundVQA(nn.Module):
         if not isinstance(input_dim, int):
             input_dim = input_dim.v_dim
 
+        # TODO: Input concat/interleave/CA
         if model_variant == 't5_ca':
             print('Using T5 with Cross-Attention')
             model_class = T5WithCAEncoderAndDecoder
-            model_args = [[0, 1, 2, 3, 4, 5]]  # FIXME: cross_attention_layers hard-coded
+            model_args = [t5_ca_layer_idxs]
         else:
             print('Using T5')
             model_class = T5ForConditionalGeneration
@@ -114,7 +121,7 @@ class GroundVQA(nn.Module):
     def forward_encoder(
         self,
         v_feat, v_mask, q_token, q_mask,
-        llava_feat = None,
+        llava_feat: None|T_llava_feature = None,
     ):
         B, L, D = v_feat.shape
         v_feat = self.lm_proj(v_feat)
@@ -123,12 +130,12 @@ class GroundVQA(nn.Module):
         lm_input = torch.cat([q_feat, v_feat], dim=1)  # [B, L, D]
         lm_mask = torch.cat([q_mask, v_mask], dim=1)  # [B, L]
         if llava_feat is not None:
-            llava_feat = self.ca_proj(llava_feat)
+            llava_feat_global = self.ca_proj(llava_feat['global'])
             out = self.lm.encoder(
                 inputs_embeds=lm_input,
                 attention_mask=lm_mask,
-                key_value_states=llava_feat,
-                # key_value_states_attention_mask=None,  # handled by the model
+                encoder_hidden_states=llava_feat_global,
+                # encoder_attention_mask=None,  # handled by the model
             )
         else:
             out = self.lm.encoder(

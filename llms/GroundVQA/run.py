@@ -82,7 +82,7 @@ def _adjust_ddp_config(trainer_cfg):
     return trainer_cfg
 
 
-@hydra.main(config_path='config', config_name='base')
+@hydra.main(config_path='config', config_name='base', version_base='1.1')
 def train(config: DictConfig):
     fake_parser = ArgumentParser()
     add_common_trainer_util_args(fake_parser, default_monitor_variable='val_loss')
@@ -103,6 +103,18 @@ def train(config: DictConfig):
         if not trainer_cfg.load_decoder:
             print('Train LM decoder head from scratch')
             state_dict = {k: v for k, v in state_dict.items() if not ("decoder" in k or "lm_head" in k)}
+        if config.model.model_variant == 't5_ca':
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                for layer_idx in config.model.t5_ca_layer_idxs:
+                    if k.startswith(f'model.lm.encoder.block.{layer_idx}.layer.1.'):
+                        print(f'Change {k} to a')
+                        k = k.replace(
+                            f'model.lm.encoder.block.{layer_idx}.layer.1.',
+                            f'model.lm.encoder.block.{layer_idx}.layer.2.')
+                        print(f'new key: {k}')
+                new_state_dict[k] = v
+            state_dict = new_state_dict
         missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         print(f'Load checkpoint: {trainer_cfg.checkpoint_path}')
         print(f'Missing Keys: {missing_keys}')
