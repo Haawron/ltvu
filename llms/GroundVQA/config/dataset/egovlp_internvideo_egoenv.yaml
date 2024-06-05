@@ -1,0 +1,8 @@
+defaults:
+  - egovlp_internvideo
+  - _self_
+
+additional_feature_type: 'egoenv'
+d_env: 128
+egoenv:
+  egoenv_dir: '/local_datasets/ego4d_data/v2/features/ego4d_egoenv_nlq_feats'

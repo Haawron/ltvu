@@ -197,3 +197,4 @@ tasks/Ego4D/ego4d.json
 checkpoints/
 cache_dir/
 cache/
+-*

@@ -111,8 +111,8 @@ def eval_model(
     model_base = None
     model_name = get_model_name_from_path(model_path)
     raw_queries = {
-        # 'local':  'What can you see? Answer only with the names of objects.',
-        'global': 'What can you see?',
+        'local':  'What can you see? Answer only with the names of objects.',
+        # 'global': 'What can you see?',
     }
     conv_mode = "chatml_direct" if 'v1.6-34b' in model_path else "llava_v1"
 
@@ -138,7 +138,7 @@ def eval_model(
     print(tokenizer)
     print(model)
 
-    p_output_dir = Path(f'results/egonlq/{model_path.split("/")[-1]}')
+    p_output_dir = Path(f'results/egonlq/{model_path.split("/")[-1]}/local')  # NOTE: To prevent overwriting
     if not p_output_dir.exists() and rank == 0:
         p_output_dir.mkdir(parents=True, exist_ok=True)
     else:
@@ -160,8 +160,8 @@ def eval_model(
             'raw_query': raw_query,
             'prompt': reset_conv_and_get_prompt(
                 conv_mode,
-                process_raw_query(raw_query, model.config.mm_use_im_start_end),
-            )}
+                process_raw_query(raw_query, model.config.mm_use_im_start_end))
+        }
         for query_type, raw_query in raw_queries.items()}
 
     for p_rawframe_clip_dir in p_rawframe_clips:

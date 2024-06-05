@@ -1,0 +1,7 @@
+defaults:
+  - groundvqa_b
+  - _self_
+
+model_variant: input_embed
+env_ext_variant: id
+num_envs: 5

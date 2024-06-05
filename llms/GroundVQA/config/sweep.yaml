@@ -1,0 +1,26 @@
+defaults:
+  - base.yaml
+
+hydra:
+  sweeper:
+    params:
+      dataset.llava.feature_aggregation: ['init', 'answer', 'all']
+      model.t5_ca_layer_idxs:
+        - [6]
+        - [11]
+        - [0,1,2,3,4,5,6,7,8,9,10,11]
+        - [6,7,8,9,10,11]
+        - [9,10,11]
+  launcher:
+    submitit:
+      folder: ${hydra.sweep.dir}/slurm_logs
+      timeout_min: 5760  # 4 days
+      gpus_per_node: 8
+      cpus_per_task: 64
+      mem_gb: 232
+      partition: batch_grad
+      exclude: ariel-k[1,2],ariel-m1
+      job_time_sec: 4*24*60*60  # 4 days
+      additional_parameters:
+        begin: "now+5hour"
+        array: "0-14%2"

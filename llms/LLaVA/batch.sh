@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=llava-v1.6-34B-extract-nlq
+#SBATCH --job-name=llava-v1.6-34B-extract-nlq-local
 #SBATCH --array=0-7
 #SBATCH --output=logs/slurm/%A-%a--%x.log
 #SBATCH --error=logs/slurm/%A-%a--%x.err

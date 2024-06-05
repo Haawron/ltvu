@@ -134,7 +134,7 @@ def _eval_model(
             top_p=args.top_p,
             num_beams=args.num_beams,
             max_new_tokens=args.max_new_tokens,
-            use_cache=True,
+            # use_cache=True,
             return_dict_in_generate=True,
             output_hidden_states=True)
         hidden_states = output_ids.hidden_states
@@ -178,7 +178,11 @@ def _eval_model(
         for p_img in p_rawframes_list:
             frame_idx = int(p_img.stem)
             print(frame_idx, end=' ')
-            outputs, (z0, z) = do_answer(str(p_img), model, tokenizer, query, args)
+            t0 = time.time()
+            outputs, (z0, z) = do_answer(str(p_img), model, tokenizer,
+            query, args)
+            dt = time.time() - t0
+            print(dt)
             answers.append((frame_idx, outputs))
             num_tokens = z0.shape[1], z.shape[1]
             tensors.append((
@@ -187,11 +191,13 @@ def _eval_model(
                 z0.mean(dim=1, keepdim=True),
                 z.mean(dim=1, keepdim=True),
             ))
+            break
+        print(answers)
         print()
-        with open(p_output_clip_json, 'w') as f:
-            json.dump(answers, f)
-        torch.save(tensors, p_output_clip_pt)
-        print(f'Done for {clip_uid}.')
+        # with open(p_output_clip_json, 'w') as f:
+        #     json.dump(answers, f)
+        # torch.save(tensors, p_output_clip_pt)
+        # print(f'Done for {clip_uid}.')
 
 
 if __name__ == "__main__":

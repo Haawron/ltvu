@@ -3,12 +3,10 @@ defaults:
   - _self_
 
 additional_feature_type: 'llava'
+d_env: 384
 llava:
-  llava_dir: '/local_datasets/ego4d_data/v2/llava-v1.6-34b/'
-  scope: 'global'  # 'global', 'local', 'both'
-  # target_stride_sec_global: 30.
-  # target_stride_sec_local: 10.
+  # llava_dir: '/local_datasets/ego4d_data/v2/llava-v1.6-34b/'
+  llava_dir: '/local_datasets/ego4d_data/v2/features/llava-v1.6-34b-cross-encoded'
+  scope: 'global'  # 'global', 'local', 'both' -> fixed to global
   load_feature: True
-  feature_aggregation: 'init'  # 'init', 'answer', 'all'
-  # load_capion: False
-  # load_partial: 700  # 700 clips out of 2017(v2) clips as llava extraction has not been finished
+  feature_aggregation: 'cross'  # 'init', 'answer', 'all', 'sentence', 'cross'

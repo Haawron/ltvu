@@ -1,12 +1,16 @@
 import json
 import copy
 import random
+from pathlib import Path
+from pprint import pformat
+from tqdm import tqdm
 
 import torch
 import pytorch_lightning as pl
 from hydra.utils import instantiate
+from omegaconf import DictConfig
 from transformers import AutoTokenizer
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR
 
 from eval import calc_metrics
 from eval_nlq import ReferringRecall
@@ -14,82 +18,35 @@ from eval_nlq import ReferringRecall
 from .model import GroundVQA
 
 
-class TestLightningModule(pl.LightningModule):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path, cache_dir='./cache_dir')
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = instantiate(config.model, max_v_len=config.dataset.max_v_len)
-
-    def test_step(self, batch, batch_idx):
-        nlq_results, answer_tokens = self.model.generate(**batch)
-        pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
-        return {
-            'question': batch['q_text'],
-            'video_id': batch['video_id'],
-            'answer': batch['a_text'] if 'a_text' in batch else '',
-            'pred_answer': pred_answer,
-            'nlq_results': nlq_results,
-            'query_id': batch['query_id'],
-            'sample_ratio': batch['sample_ratio'],
-            'task': batch['task'],
-            'clip_uid': batch['video_id']
-        }
-
-    def test_epoch_end(self, outputs):
-        self.save_nlq_results(outputs)
-
-    def save_nlq_results(self, preds):
-        # aggregate preds
-        pred_dict = {
-            "version": "1.0",
-            "challenge": "ego4d_nlq_challenge",
-            "results": []
-        }
-        for batch_pred in preds:
-            for i in range(len(batch_pred['video_id'])):
-                qid = batch_pred['query_id'][i]
-                annotation_uid, query_idx = qid.split('_')
-                query_idx = int(query_idx)
-                clip_uid = batch_pred['clip_uid'][i]
-                sample_ratio = batch_pred['sample_ratio'][i]
-                predicted_times = [
-                    [segment[0] / sample_ratio, segment[1] / sample_ratio]
-                    for segment in batch_pred['nlq_results'][i]['segments'].cpu().detach().tolist()
-                ]
-
-                pred_dict['results'].append({
-                    'clip_uid': clip_uid,
-                    'annotation_uid': annotation_uid,
-                    'query_idx': query_idx,
-                    'predicted_times': predicted_times
-                })
-
-        with open('nlq_eval_results/nlq_v2.json', 'w') as f:
-            json.dump(pred_dict, f)
-
-
 class LightningModule(pl.LightningModule):
-    def __init__(self, config, total_steps):
+    def __init__(self, config, total_steps, max_epochs=20):
         super().__init__()
         self.config = config
+        self.save_hyperparameters(config)
         self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path, cache_dir='./cache_dir')
         self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model: GroundVQA = instantiate(config.model, max_v_len=config.dataset.max_v_len)
+        self.model: GroundVQA = instantiate(config.model, max_v_len=config.dataset.max_v_len, d_env=config.dataset.get('d_env'))
         self.nlq_evaluator = ReferringRecall(
             dataset="ego4d",
             gt_file=config.dataset.nlq_val_anno
         )
         self._log_indices = {}
         self.total_steps = total_steps
+        self.max_epochs = max_epochs
+
+    def get_progress_bar_dict(self) -> torch.Dict[str, int | str]:
+        bar_dict = super().get_progress_bar_dict()
+        bar_dict['v_num'] = str(bar_dict['v_num'])  # prevent scientific notation
+        return bar_dict
 
     def training_step(self, batch, batch_idx):
-        total_loss, ce_loss, time_loss = self.model(**batch)
-        self.log('total_loss', total_loss, rank_zero_only=True)
+        total_loss, ce_loss, time_loss, cls_loss, reg_loss = self.model(**batch)
+        self.log('loss/total', total_loss, rank_zero_only=True)
+        self.log('loss/cls', cls_loss, rank_zero_only=True)
+        self.log('loss/reg', reg_loss, rank_zero_only=True)
         if not self.config.model.ignore_decoder:
-            self.log('ce_loss', ce_loss, rank_zero_only=True)
-            self.log('time_loss', time_loss, rank_zero_only=True)
+            self.log('loss/ce', ce_loss, rank_zero_only=True)
+            self.log('loss/time', time_loss, rank_zero_only=True)
         return {
             'loss': total_loss,
         }
@@ -196,11 +153,11 @@ class LightningModule(pl.LightningModule):
                 })
         if len(nlq_preds) > 0:
             performance, score_str, all_ious = self.nlq_evaluator.evaluate(nlq_preds, verbose=False, return_ious=True)
-            metrics[f'{prefix}_R1_03'] = performance[0, 0] * 100
-            metrics[f'{prefix}_R5_03'] = performance[0, 1] * 100
-            metrics[f'{prefix}_R1_05'] = performance[1, 0] * 100
-            metrics[f'{prefix}_R5_05'] = performance[1, 1] * 100
-            metrics[f'{prefix}_Mean_R1'] = (performance[0, 0] + performance[1, 0]) * 100 / 2
+            metrics[f'{prefix}/R1_03'] = performance[0, 0] * 100
+            metrics[f'{prefix}/R5_03'] = performance[0, 1] * 100
+            metrics[f'{prefix}/R1_05'] = performance[1, 0] * 100
+            metrics[f'{prefix}/R5_05'] = performance[1, 1] * 100
+            metrics[f'{prefix}/Mean_R1'] = (performance[0, 0] + performance[1, 0]) * 100 / 2
 
         # save predictions
         results = []
@@ -218,10 +175,10 @@ class LightningModule(pl.LightningModule):
                     pred.append(iou.item())
                 results.append(result)
 
-        from pathlib import Path
-        (p_out_json:=Path('analysis/VLG_OpenQA.json')).parent.mkdir(parents=True, exist_ok=True)
-        with p_out_json.open('w') as f:
-            json.dump(results, f)
+        if self.config.dataset.get('additional_feature_type') is None:
+            (p_out_json:=Path('analysis/VLG_OpenQA.json')).parent.mkdir(parents=True, exist_ok=True)
+            with p_out_json.open('w') as f:
+                json.dump(results, f)
 
         return metrics
 
@@ -236,9 +193,11 @@ class LightningModule(pl.LightningModule):
 
         # self._log_some_outputs(outputs, 'val')
         metrics = self.aggregate_metrics(outputs, prefix='val')
-        metrics.update({
-            f'val_{name}': _mean(name) for name in outputs[0].keys() if 'loss' in name
-        })
+        if tqdm._instances:
+            msg = pformat(metrics)
+            next(iter(tqdm._instances)).write(msg)
+        metrics.update({key.replace('val/', 'hp/'): value for key, value in metrics.items() if 'val/' in key})  # for hparam logging
+        metrics.update({f'val/{name}': _mean(name) for name in outputs[0].keys() if 'loss' in name})
         self.log_dict(metrics, sync_dist=True)
 
     def test_epoch_end(self, outputs):
@@ -282,11 +241,16 @@ class LightningModule(pl.LightningModule):
             lr=self.config.optim.optimizer.lr
         )
         if self.config.optim.lr_scheduler:
-            lr_scheduler = OneCycleLR(
+            # lr_scheduler = OneCycleLR(
+            #     optimizer=optimizer,
+            #     max_lr=self.config.optim.optimizer.lr,
+            #     total_steps=self.total_steps,
+            #     anneal_strategy='linear'
+            # )
+            lr_scheduler = CosineAnnealingLR(
                 optimizer=optimizer,
-                max_lr=self.config.optim.optimizer.lr,
-                total_steps=self.total_steps,
-                anneal_strategy='linear'
+                T_max=self.total_steps//(self.max_epochs // 5),
+                eta_min=1e-6
             )
             return {
                 'optimizer': optimizer,
@@ -299,12 +263,27 @@ class LightningModule(pl.LightningModule):
             return optimizer
 
     def on_before_optimizer_step(self, optimizer, optimizer_idx: int) -> None:
-        unintended_no_grad_captured = False
-        for n, p in self.model.named_parameters():
-            if p.requires_grad and p.grad is None:
-                print(f'{n} [{p.shape}] requires grad but got None')
-                unintended_no_grad_captured = True
-        if unintended_no_grad_captured:
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-            raise ValueError("No gradients")
+        if self.trainer.global_step == 0:
+            unintended_no_grad_captured = False
+            for n, p in self.model.named_parameters():
+                if p.requires_grad and p.grad is None:
+                    print(f'{n} [{p.shape}] requires grad but got None')
+                    unintended_no_grad_captured = True
+            if unintended_no_grad_captured:
+                if torch.distributed.is_initialized():
+                    torch.distributed.barrier()
+                raise ValueError("No gradients")
+
+    def on_train_start(self):
+        self.logger.log_hyperparams(self.hparams, {
+            "hp/Mean_R1": 0,
+            "hp/R1_03": 0, "hp/R5_03": 0,
+            "hp/R1_05": 0, "hp/R5_05": 0,
+        })
+
+    # def on_train_end(self):
+    #     self.logger.log_hyperparams(self.hparams, {
+    #         "hp/Mean_R1": 0,
+    #         "hp/R1_03": 0, "hp/R5_03": 0,
+    #         "hp/R1_05": 0, "hp/R5_05": 0,
+    #     })

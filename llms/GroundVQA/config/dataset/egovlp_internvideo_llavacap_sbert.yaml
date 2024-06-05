@@ -1,0 +1,12 @@
+defaults:
+  - egovlp_internvideo
+  - _self_
+
+additional_feature_type: 'llava'
+d_env: 768
+llava:
+  # llava_dir: '/local_datasets/ego4d_data/v2/features/llava-v1.6-34b/multi-qa-mpnet-base-dot-v1/'
+  llava_dir: '/data/gunsbrother/prjs/ltvu/llms/GroundVQA/data/features/llava-v1.6-34b/all-mpnet-base-v2-tuned'
+  scope: 'global'
+  load_feature: True
+  feature_aggregation: 'sentence'

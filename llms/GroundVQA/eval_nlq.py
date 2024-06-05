@@ -153,7 +153,7 @@ class ReferringRecall(object):
     ):
         self.dataset = dataset
         self.gt_file = gt_file
-        print(self.gt_file)
+        print(f'\n[{self.__class__.__name__}] GT file: {self.gt_file}\n')
         if self.dataset == "ego4d":
             with open(self.gt_file) as file_id:
                 self.gt_dict, self.num_gt_queries = self.load_gt_from_json(json.load(file_id))

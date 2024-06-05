@@ -265,7 +265,7 @@ class Scale(nn.Module):
         input -> scale * input
         """
         return x * self.scale
-    
+
 
 class MaskedConv1D(nn.Module):
     """
@@ -367,7 +367,7 @@ class LayerNorm(nn.Module):
             out += self.bias
 
         return out
-    
+
 
 class PtTransformerClsHead(nn.Module):
     """
@@ -559,8 +559,8 @@ class NLQHead(nn.Module):
             regression_range=[[0,10000]]
         )
         self.cls_head = PtTransformerClsHead(
-            in_dim, 
-            feat_dim=384, 
+            in_dim,
+            feat_dim=384,
             num_classes=1,
             kernel_size=3,
             prior_prob=self.train_cls_prior_prob,
@@ -569,7 +569,7 @@ class NLQHead(nn.Module):
             empty_cls=[]
         )
         self.reg_head = PtTransformerRegHead(
-            in_dim, 
+            in_dim,
             feat_dim=384,
             fpn_levels=1,
             kernel_size=3,
@@ -608,7 +608,7 @@ class NLQHead(nn.Module):
             results = self.inference(points, fpn_masks, out_cls_logits, out_offsets, 1, v_lens)
 
             return results
-        
+
     @torch.no_grad()
     def label_points(self, points, gt_segments, gt_labels, num_classes):
         # concat points on all fpn levels List[T x 4] -> F T x 4
@@ -630,7 +630,7 @@ class NLQHead(nn.Module):
             gt_offset.append(reg_targets)
 
         return gt_cls, gt_offset
-    
+
     @torch.no_grad()
     def label_points_single_video(self, concat_points, gt_segment, gt_label, num_classes):
         # concat_points : F T x 4 (t, regression range, stride)
@@ -720,7 +720,7 @@ class NLQHead(nn.Module):
         # normalization based on stride
         reg_targets /= concat_points[:, 3, None]
         return cls_targets, reg_targets
-    
+
     def losses(
         self, fpn_masks,
         out_cls_logits, out_offsets,
@@ -733,8 +733,11 @@ class NLQHead(nn.Module):
 
         # 1. classification loss
         # stack the list -> (B, FT) -> (# Valid, )
-        gt_cls = torch.stack(gt_cls_labels)
-        pos_mask = torch.logical_and((gt_cls.sum(-1) > 0), valid_mask)
+        gt_cls = torch.stack(gt_cls_labels)  # [B, FT, C=1]
+        pos_mask = torch.logical_and(
+            gt_cls.sum(-1) > 0,  # [B, FT=900 or 1200]
+            valid_mask
+        )
 
         # update the loss normalizer
         num_pos = pos_mask.sum().item()
@@ -797,7 +800,7 @@ class NLQHead(nn.Module):
 
         # 2: inference on each single video and gather the results
         # upto this point, all results use timestamps defined on feature grids
-        for idx, vlen in enumerate(v_lens):  
+        for idx, vlen in enumerate(v_lens):
             # gather per-video outputs
             cls_logits_per_vid = [x[idx] for x in out_cls_logits]
             offsets_per_vid = [x[idx] for x in out_offsets]
@@ -815,7 +818,7 @@ class NLQHead(nn.Module):
         results = self.postprocessing(results)
 
         return results
-    
+
     @torch.no_grad()
     def inference_single_video(
             self,
@@ -929,7 +932,7 @@ class NLQHead(nn.Module):
             })
 
         return processed_results
-    
+
 
 class NMSop(torch.autograd.Function):
     @staticmethod

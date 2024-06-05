@@ -5,11 +5,11 @@ feature_dim: 2304
 max_v_len: 1200
 
 qa_train_splits: []
-nlq_train_splits: []
-test_splits: ['QaEgo4D_test', 'QaEgo4D_test_close', 'NLQ_val']
+nlq_train_splits: ['NLQ_train']
+test_splits: ['NLQ_val']
 closeqa_weight: 50
 
 tokenizer_path: google/flan-t5-small
 
-num_workers: 16
-batch_size: 16
+num_workers: 8
+batch_size: 6

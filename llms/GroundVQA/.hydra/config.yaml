@@ -1,0 +1,64 @@
+dataset:
+  data_dir: data/unified
+  nlq_val_anno: data/nlq_v2/nlq_val.json
+  feature_type: egovlp_internvideo
+  feature_dim: 2304
+  max_v_len: 1200
+  qa_train_splits: []
+  nlq_train_splits:
+  - NLQ_train
+  test_splits:
+  - NLQ_val
+  closeqa_weight: 50
+  tokenizer_path: google/flan-t5-small
+  num_workers: 8
+  batch_size: 6
+  additional_feature_type: llava
+  d_env: 768
+  llava:
+    llava_dir: data/features/00_cheat_env_binary
+    scope: global
+    load_feature: true
+    feature_aggregation: cross
+model:
+  _target_: model.ours.model.GroundVQA
+  lm_path: google/flan-t5-base
+  input_dim: ${dataset.feature_dim}
+  freeze_word: true
+  ignore_decoder: true
+  model_variant: input_concat
+  env_ext_variant: id
+  num_envs: 5
+trainer:
+  detect_anomaly: false
+  max_epochs: 20
+  accumulate_grad_batches: 4
+  auto_resume: false
+  gpus: 8
+  log_every_n_steps: 1
+  auto_lr_find: false
+  enable_progress_bar: true
+  monitor_variable: val_ROUGE
+  monitor_mode: max
+  find_unused_parameters: false
+  precision: bf16
+  val: false
+  gradient_clip_val: 1.0
+  save_nlq_results: null
+  deterministic: true
+  load_decoder: true
+  load_nlq_head: true
+  ignore_existing_checkpoints: true
+  checkpoint_path: checkpoints/GroundVQA_B-NLQ_NaQ-finetune_NLQ-VLG-val_R1_03=29.7.ckpt
+optim:
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 1.0e-05
+    weight_decay: 0.0
+  freeze: []
+  lr_scheduler: false
+batch_flag: '0'
+dirs:
+- debug
+- batch
+batch_dir: ${dirs[${batch_flag}]}

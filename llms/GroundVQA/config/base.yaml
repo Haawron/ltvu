@@ -6,9 +6,9 @@ defaults:
   - override hydra/hydra_logging: none
 
 trainer:
-  detect_anomaly: True
-  max_epochs: 100
-  accumulate_grad_batches: 1
+  detect_anomaly: False
+  max_epochs: 20
+  accumulate_grad_batches: 4
   auto_resume: False
   gpus: 1
   log_every_n_steps: 1
@@ -25,7 +25,7 @@ trainer:
   load_decoder: True
   load_nlq_head: True
   ignore_existing_checkpoints: True
-  
+
 optim:
   optimizer:
     _target_: torch.optim.AdamW
@@ -34,7 +34,13 @@ optim:
   freeze: [ ]
   lr_scheduler: False
 
+batch_flag: '0'
+dirs: ['debug', 'batch']
+batch_dir: ${dirs[${batch_flag}]}
+
 hydra:
   run:
-    dir: .
-  output_subdir: null
+    dir: ./outputs/${batch_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+#   sweep:
+#     dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+#     subdir: ${hydra.job.num}

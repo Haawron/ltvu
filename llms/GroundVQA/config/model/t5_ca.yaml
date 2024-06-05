@@ -1,0 +1,10 @@
+defaults:
+  - groundvqa_b
+  - _self_
+
+model_variant: t5_ca
+env_ext_variant: id
+num_envs: 5
+# https://huggingface.co/google/flan-t5-base/blob/main/config.json
+t5_ca_layer_idxs: [0,1]
+freeze_all_but_ca: True

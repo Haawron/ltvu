@@ -1,19 +1,69 @@
+import re
+
 import torch
+import torch.distributed
 import torch.nn as nn
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 from transformers.models.t5.modeling_t5 import T5Stack, T5LayerCrossAttention
 from transformers.modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
 
 
+def shift_cross_attention_added_block_names(state_dict, cross_attention_layer_idxs=[]):
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() > 0:
+        log = lambda *_, **__: None
+    else:
+        log = print
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        for layer_idx in cross_attention_layer_idxs:
+            pattern = r'encoder\.block\.' + str(layer_idx) + r'\.layer\.1\.(DenseReluDense|layer_norm)\.(.+)'
+            matched = re.findall(pattern, k)
+            if matched:
+                name, subname = matched[0]
+                log(f'Old key: {k}')
+                k = k.replace(
+                    f'encoder.block.{layer_idx}.layer.1.{name}.{subname}',
+                    f'encoder.block.{layer_idx}.layer.2.{name}.{subname}')
+                log(f'New key: {k}')
+        new_state_dict[k] = v
+    return new_state_dict
+
+
+def find_all_cross_attention_parameters(state_dict, cross_attention_layer_idxs):
+    cross_attention_parameters = {}
+    for k, v in state_dict.items():
+        for layer_idx in cross_attention_layer_idxs:
+            pattern = r'encoder\.block\.' + str(layer_idx) + r'\.layer\.1\.(EncDecAttention|layer_norm)\.(.+)'
+            if re.findall(pattern, k):
+                cross_attention_parameters[k] = v
+    return cross_attention_parameters
+
+
 class T5WithCAEncoderAndDecoder(T5ForConditionalGeneration):
     def __init__(self, config, cross_attention_layer_idxs):
         super().__init__(config)
         self.cross_attention_layer_idxs = cross_attention_layer_idxs
+        self = self._shift_and_insert_ca(self, cross_attention_layer_idxs)
+
+    @staticmethod
+    def _shift_and_insert_ca(lm, cross_attention_layer_idxs):
         assert 0 <= min(cross_attention_layer_idxs)
-        assert max(cross_attention_layer_idxs) < self.config.num_layers
+        assert max(cross_attention_layer_idxs) < lm.config.num_layers
         for i in cross_attention_layer_idxs:
-            self.encoder.block[i].layer.insert(1, T5LayerCrossAttention(config))
-            self.encoder.block[i].is_decoder = True
+            lm.encoder.block[i].layer.insert(1, T5LayerCrossAttention(lm.config))
+            lm.encoder.block[i].is_decoder = True
+        return lm
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_name_or_path, *model_args,
+        cross_attention_layer_idxs,
+        **kwargs
+    ) -> 'T5WithCAEncoderAndDecoder':
+        lm = T5ForConditionalGeneration.from_pretrained(
+            pretrained_model_name_or_path, *model_args, **kwargs)
+        lm = cls._shift_and_insert_ca(lm, cross_attention_layer_idxs)
+        return lm
 
 
 if __name__ == '__main__':
@@ -92,4 +142,5 @@ if __name__ == '__main__':
         assert not torch.allclose(out.hidden_states[-1], out2.hidden_states[-1])
 
         print('All passed!')
+
     test()

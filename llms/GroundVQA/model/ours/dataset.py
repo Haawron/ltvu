@@ -1,7 +1,7 @@
 # Joint dataset of CloseQA, OpenQA, and NLQ
 
 import os
-import math
+import re
 import json
 import random
 from pathlib import Path
@@ -23,7 +23,9 @@ class BaseDataset(Dataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__()
         self.split = split
-        self.video_features = h5py.File(os.path.join(data_dir, feature_type + '.hdf5'), 'r')
+        p_hdf5 = os.path.join(data_dir, feature_type + '.hdf5')
+        self.video_features = h5py.File(p_hdf5, 'r')
+        # self.p_video_features_dir = Path(f'/local_datasets/ego4d_data/v2/features/{feature_type}')
         self.annotations = json.loads(Path(os.path.join(data_dir, f'annotations.{split}.json')).read_text())
         self.max_v_len = max_v_len
         print(f'{split} set: {len(self.annotations)}')
@@ -33,6 +35,8 @@ class BaseDataset(Dataset):
 
     def _get_video_feature(self, video_id):
         video_feature = torch.from_numpy(self.video_features[video_id][:])
+        # p_video_feature = self.p_video_features_dir / f'{video_id}.pt'
+        # video_feature = torch.load(p_video_feature)
         v_len = video_feature.shape[0]
         sample_ratio = 1.0
         if v_len > self.max_v_len:
@@ -89,6 +93,12 @@ class NLQDataset(BaseDataset):
         }
 
 
+def interp_t(tensor, T_target, mode='nearest'):
+    # tensor: [T_source, D]
+    D, dtype = tensor.shape[-1], tensor.dtype
+    return F.interpolate(tensor[None, None].float(), size=(T_target, D), mode=mode).squeeze([0, 1]).to(dtype=dtype)
+
+
 SAMPLE_CLIP_UID = 'f06d1935-550f-4caa-909c-b2db4c28f599'
 class NLQDatasetOnLLaVA(NLQDataset):
     def __init__(
@@ -98,64 +108,141 @@ class NLQDatasetOnLLaVA(NLQDataset):
         # target_stride_sec_global: float,
         # target_stride_sec_local: float,
         load_feature: bool,
-        feature_aggregation: Literal['init', 'answer', 'all']
+        feature_aggregation: Literal['init', 'answer', 'all', 'sentence', 'cross'],
+        d_env: int = 384,
+        max_env_len: int = 48,
     ):
         super().__init__(data_dir, split, feature_type, max_v_len)
         self.p_llava_dir = Path(llava_dir)
-        valid_clip_uids = set(p.stem for p in self.p_llava_dir.glob('**/*.pt'))
-        required_clip_uids = set(a['video_id'] for a in self.annotations)
-        diff = required_clip_uids - valid_clip_uids
-        print(f'Clips not existing in LLaVA: {diff} ({len(diff)})')
-        self.annotations = [a for a in self.annotations if a['video_id'] in valid_clip_uids]
+        assert self.p_llava_dir.exists()
+
+        if feature_aggregation in ['init', 'answer', 'all', 'sentence']:
+            valid_clip_uids = set(p.stem for p in self.p_llava_dir.glob('**/*.pt'))
+            required_clip_uids = set(a['video_id'] for a in self.annotations)
+            diff = required_clip_uids - valid_clip_uids
+            print(f'Clips not existing in LLaVA: {diff} ({len(diff)})')
+            self.annotations = [a for a in self.annotations if a['video_id'] in valid_clip_uids]
+
+        elif feature_aggregation in ['cross']:
+            query_ids = set(p.stem for p in self.p_llava_dir.glob('**/*.pt'))
+            required_query_ids = set(a['sample_id'] for a in self.annotations)
+            diff = required_query_ids - query_ids
+            print(f'Queries not existing in LLaVA: {diff} ({len(diff)})')
+            self.annotations = [a for a in self.annotations if a['sample_id'] in query_ids]
+
+        else:
+            raise NotImplementedError
+
         self.scope = scope
         # self.target_stride_sec_global = target_stride_sec_global
         # self.target_stride_sec_local = target_stride_sec_local
         self.load_feature = load_feature
         self.feature_aggregation = feature_aggregation
+        self.max_env_len = max_env_len
 
     def __getitem__(self, index):
         # TODO: 인풋 옵션
             # [x]: z_init vs. z_answer vs. z_all (vs. z_init[:non_pad]; 이렇게 안 뽑아서 아예 불가)
-            # [ ]: vs. answer -> token (-> Sentence Embedding)
-            # [ ]: vs. (answer, query) -> token (-> Cross Embedding)
-            # [ ]: global vs. local vs. both --> local 다루려면 파일 포맷을 제대로 정해야 함
+            # [ ]: vs. answer -> z_cap (-> Sentence Embedding)
+            # [!]: vs. (answer, query) -> z_qcap (-> Cross Embedding) [49 or 73, 384]
+            # [x]: global vs. local vs. both --> global로 픽스
         output: dict = super().__getitem__(index)
         video_id = output['video_id']
-        p_llava_feature = self.p_llava_dir / self.scope / f'{video_id}.pt'
-        llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
-        llava_features = {}
-        llava_features[self.scope] = self._get_llava_feature(
-            llava_feature_data)[self.feature_aggregation]
-        output['llava_feat'] = llava_features
+        query_id = output['query_id']
+        T_vid = output['v_len']
+        llava_features = None
+        if self.feature_aggregation in ['init', 'answer', 'all']:
+            llava_features = self._get_raw_llava_feature(video_id, T_vid)
+        elif self.feature_aggregation in ['cross']:
+            llava_features = self._get_q_dep_encoded_llava_feature(query_id)
+        elif self.feature_aggregation in ['sentence']:
+            llava_features = self._get_encoded_llava_feature(video_id, T_vid)
+        else:
+            raise NotImplementedError
+        output['env_feat'] = llava_features
         return output
 
-    def _get_llava_feature(
+    def _get_encoded_llava_feature(self, video_id, T_vid):
+        p_llava_feature = self.p_llava_dir / f'{video_id}.pt'
+        llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
+        tensors = []
+        for frame_idx, tensor in llava_feature_data:
+            tensors.append(tensor.squeeze())
+        tensors = torch.stack(tensors)  # [T_caps_source, D_cross=384 or 768]
+        # tensors = interp_t(tensors, 48)
+        tensors = interp_t(tensors, T_vid)
+        return tensors
+
+    def _get_q_dep_encoded_llava_feature(self, query_id):
+        if (subsplit := re.findall(r'(train|val|test)', self.split))\
+            and (self.p_llava_dir / subsplit[0]).exists():
+            p_llava_feature = self.p_llava_dir / subsplit[0] / f'{query_id}.pt'
+        else:
+            p_llava_feature = self.p_llava_dir / f'{query_id}.pt'
+        llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
+        tensors = []
+        for frame_idx, tensor in llava_feature_data:
+            tensors.append(tensor)
+        tensors = torch.stack(tensors)  # [T_caps_source, D_cross=384]
+        tensors = interp_t(tensors, 48)  # [T_caps=48, D_cross=384]
+        return tensors
+
+    def _get_raw_llava_feature(
         self,
-        llava_feature_data,
+        video_id,
         T_target = 16,
-        # T_vfeat,
+        # T_vid,
         # target_stride_sec=30.,
     ):
         FPS = 30
+        p_llava_feature = self.p_llava_dir / self.scope / f'{video_id}.pt'
+        llava_feature_data = torch.load(p_llava_feature, map_location='cpu')
         llava_features = {'init': [], 'answer': [], 'all': []}
         for frame_idx, source_scope, (num_in_tokens, num_out_tokens), z_init, z_answer in llava_feature_data:
-            z_all = (num_in_tokens * z_init + num_out_tokens * z_answer) / (num_in_tokens + num_out_tokens)
+            denom = num_in_tokens + num_out_tokens
+            r1, r2 = num_in_tokens / denom, num_out_tokens / denom
+            z_all = r1 * z_init + r2 * z_answer  # to prevent float16 overflow(>65535)
             llava_features['init'].append(z_init.squeeze())  # [D_llava=4096(8B) or 7168(34B)]
             llava_features['answer'].append(z_answer.squeeze())
             llava_features['all'].append(z_all.squeeze())
+        # NOTE: don't remove
         # source_stride_frame = llava_feature_data[1][0] - llava_feature_data[0][0]  # 300 = 10s
         # target_stride_frame = target_stride_sec * FPS
         # target_stride_index = source_stride_frame / target_stride_frame  # 3
-        T_source = len(llava_feature_data)
+        # T_source = len(llava_feature_data)
         # T_target = math.ceil(T_source / target_stride_index)
         llava_features = {k: torch.stack(v) for k, v in llava_features.items()}
         for k, v in llava_features.items():
-            D_llava, dtype = v.shape[-1], v.dtype
-            v = v[None, None].float()
-            v = F.interpolate(v, size=(T_target, D_llava), mode='nearest')
-            # v = F.interpolate(v, size=(T_vfeat, D_llava), mode='nearest')
-            llava_features[k] = v.squeeze([0, 1]).to(dtype=dtype)  # [T_vfeat, D_llava]
-        return llava_features
+            llava_features[k] = interp_t(v, T_target)  # [T_vid, D_llava]
+            # v = v[None, None].float()
+            # v = F.interpolate(v, size=(T_target, D_llava), mode='nearest')
+            # v = F.interpolate(v, size=(T_vid, D_llava), mode='nearest')
+            # llava_features[k] = v.to(dtype=dtype)  # [T_vid, D_llava]
+        return llava_features[self.feature_aggregation]
+
+
+class NLQDatasetOnEgoEnv(NLQDataset):
+    def __init__(
+        self, data_dir, split, feature_type, max_v_len,
+        egoenv_dir: str = '/local_datasets/ego4d_data/v2/features/ego4d_egoenv_nlq_feats',
+        d_env: int = 128,
+    ):
+        super().__init__(data_dir, split, feature_type, max_v_len)
+        self.p_egoenv_dir = Path(egoenv_dir)
+        assert self.p_egoenv_dir.exists(), f'{self.p_egoenv_dir} does not exist'
+
+    def __getitem__(self, index):
+        output = super().__getitem__(index)
+        video_id = output['video_id']
+        T_vid = output['v_len']
+        p_egoenv_feature = self.p_egoenv_dir / f'{video_id}.pt'
+        egoenv_feature = torch.load(p_egoenv_feature, map_location='cpu')  # [T_egoenv=897 or , D_egoenv=128]
+        if egoenv_feature.shape[0] > T_vid:
+            egoenv_feature = interp_t(egoenv_feature, T_vid)
+        else:
+            egoenv_feature = F.pad(egoenv_feature, (0, 0, 0, T_vid - egoenv_feature.shape[0]))  # [T_vid, D_egoenv]
+        output['env_feat'] = egoenv_feature
+        return output
 
 
 class QADataset(BaseDataset):
@@ -262,9 +349,12 @@ class JointDataset(ConcatDataset):
             'labels': labels,
             'task': [b['task'] for b in batch],
         }
-        if 'llava_feat' in batch[0]:
-            result['llava_feat'] = default_collate([b['llava_feat'] for b in batch])
-            # print(result['llava_feat']['global'].shape)
+        if 'env_feat' in batch[0]:
+            # result['env_feat'] = default_collate([b['env_feat'] for b in batch])
+            env_feat_raw = [b['env_feat'] for b in batch]
+            env_feat_padded = pad_sequence(env_feat_raw, batch_first=True)
+            result['env_feat_raw'] = env_feat_raw
+            result['env_feat'] = env_feat_padded  # [B, T, D], shares the mask with the video one
 
         return result
 
@@ -280,9 +370,13 @@ class JointDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         ds_kws = {}
-        if self.config.get('additional_feature_type', '') == 'llava':
+        additional_feature_type = self.config.get('additional_feature_type', '')
+        if additional_feature_type == 'llava':
             DatasetClassForNLQ = NLQDatasetOnLLaVA
             ds_kws |= self.config.get('llava', {})
+        elif additional_feature_type == 'egoenv':
+            DatasetClassForNLQ = NLQDatasetOnEgoEnv
+            ds_kws |= self.config.get('egoenv', {})
         else:
             DatasetClassForNLQ = NLQDataset
 

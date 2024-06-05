@@ -1,0 +1,60 @@
+defaults:
+  # - dataset: egovlp_internvideo
+  # - model: groundvqa_s
+  - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+available_captioners:
+  - VideoRecap
+  - llava-v1.6-34b
+  - LLaVA-NeXT-Video-7B-DPO
+
+model:
+  _target_: model.SentenceGroundingModel
+  model_name: 'sentence-transformers/all-mpnet-base-v2'
+  max_num_caps: ${dataset.max_num_caps}
+  alpha_loss_q_cap: 1.0
+  alpha_loss_cap_cap: 0
+  loss_fn_q_cap: multi-pos
+  loss_fn_cap_cap: multi-pos
+
+dataset:
+  num_workers: 8
+  captioner_name: 'LLaVA-NeXT-Video-7B-DPO'
+  tokenizer_name: ${model.model_name}
+  max_num_caps: 96
+  max_cap_len: 256
+  max_q_len: 22
+  prefetch_factor: 16
+  pin_memory: True
+  persistent_workers: True
+  force_retokenize: False
+
+trainer:
+  max_epochs: 20
+  precision: bf16-mixed
+  deterministic: True
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 32
+  detect_anomaly: False
+  log_every_n_steps: 1
+  val_check_interval: .5
+
+optim:
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 0.0001
+    # weight_decay: 0.0
+  freeze: [ ]
+  lr_scheduler: False
+
+batch_flag: '0'
+dirs:
+  - debug
+  - batch
+batch_dir: ${dirs[${batch_flag}]}
+
+hydra:
+  run:
+    dir: ./outputs/${batch_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
