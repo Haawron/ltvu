@@ -1,52 +1,78 @@
 defaults:
-  # - dataset: egovlp_internvideo
-  # - model: groundvqa_s
   - _self_
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
-available_captioners:
-  - VideoRecap
-  - llava-v1.6-34b
-  - LLaVA-NeXT-Video-7B-DPO
+
+available_options:
+  # just for indicating available options
+  # thus should not and does not affect the actual configuration
+  models:
+    - 'sentence-transformers/all-mpnet-base-v2'  # N = 96, L = 256
+    - 'sentence-transformers/all-MiniLM-L6-v2'
+    - 'egovlp'  # N = 256, L = 384
+
+  captioners:
+    - VideoRecap
+    - llava-v1.6-34b
+    - LLaVA-NeXT-Video-7B-DPO
+
+  caption_pair_relations:
+    - null
+    - adjacency
+    - color_historgram_similarity
+
+  loss_functions:
+    - multi-pos
+    - bcewl
 
 model:
-  _target_: model.SentenceGroundingModel
-  model_name: 'sentence-transformers/all-mpnet-base-v2'
+  model_name: egovlp
   max_num_caps: ${dataset.max_num_caps}
-  alpha_loss_q_cap: 1.0
-  alpha_loss_cap_cap: 0
+  alpha_loss_q_cap: 1.
+  alpha_loss_cap_cap: 0.
   loss_fn_q_cap: multi-pos
   loss_fn_cap_cap: multi-pos
+  freeze_embeddings: True
 
 dataset:
   num_workers: 8
-  captioner_name: 'LLaVA-NeXT-Video-7B-DPO'
+  captioner_name: 'llava-v1.6-34b'
   tokenizer_name: ${model.model_name}
-  max_num_caps: 96
-  max_cap_len: 256
-  max_q_len: 22
+  caption_pair_relation: color_historgram_similarity
+  max_num_caps: 256
+  max_cap_len: 384
+  max_q_len: 64
   prefetch_factor: 16
   pin_memory: True
   persistent_workers: True
   force_retokenize: False
 
 trainer:
-  max_epochs: 20
+  # affects significantly to the result
   precision: bf16-mixed
   deterministic: True
+  accumulate_grad_batches: 32  # 이건가????
+
+  # not really
+  max_epochs: 100
   gradient_clip_val: 1.0
-  accumulate_grad_batches: 32
+
+  # not at all
   detect_anomaly: False
   log_every_n_steps: 1
   val_check_interval: .5
+
+others:  # not classified yet
+  check_valid_first: False
+  ckpt_path: null
+  save_top_k: 1
 
 optim:
   optimizer:
     _target_: torch.optim.AdamW
     lr: 0.0001
     # weight_decay: 0.0
-  freeze: [ ]
   lr_scheduler: False
 
 batch_flag: '0'

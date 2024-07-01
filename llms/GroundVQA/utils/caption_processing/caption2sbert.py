@@ -5,30 +5,39 @@ from tqdm import tqdm
 
 import torch
 from sentence_transformers import SentenceTransformer
+from transformers import AutoModel, AutoTokenizer
 
 
 @torch.no_grad()
 def main():
     # Captioner
-    # captioner_name = 'llava-v1.6-34b'
-    captioner_name = 'LLaVA-NeXT-Video-7B-DPO'
+    captioner_name = 'llava-v1.6-34b'
+    # captioner_name = 'LLaVA-NeXT-Video-7B-DPO'
 
     # Language Encoder
-    model_path = 'multi-qa-mpnet-base-dot-v1'
+    model_path = 'all-mpnet-base-v2'
+    # model_path = 'multi-qa-mpnet-base-dot-v1'
     # model_path = Path('/data/gunsbrother/prjs/ltvu/everything/results/all-mpnet-base-v2/checkpoint-200')
+    # model_path = Path('/data/gunsbrother/prjs/ltvu/everything/sbert_finetune/outputs/batch/2024-06-05/15-28-58/lit/102720/checkpoints/step=4158-nlq_R5@0.3=0.000.ckpt')
     if isinstance(model_path, str):  # HF or SBert model
         model_name = model_path
         postfix = ''
     else:  # Fine-tuned model
         model_name = model_path.parent.name
-        postfix = '-tuned'
+        postfix = '-tuned-2024-06-05-15-28-58'
 
     print('Loading model ...')
-    model = SentenceTransformer(str(model_path)).cuda().eval()
+    # model = SentenceTransformer(str(model_path)).cuda().eval()
+    model = SentenceTransformer('all-mpnet-base-v2').cuda().eval()
+    # model.load_state_dict(
+    #     {k.replace('model.model.', '0.auto_model.'): v for k, v in torch.load(model_path)['state_dict'].items()},
+    #     strict=False
+    # )
     print('Model loaded.')
 
     # p_caps_dir = Path(f'/data/gunsbrother/prjs/ltvu/llms/LLaVA/results/egonlq/{captioner_name}/global')
-    p_caps_dir = Path(f'/data/gunsbrother/prjs/ltvu/llms/LLaVA-NeXT/work_dirs/{captioner_name}/global')
+    # p_caps_dir = Path(f'/data/gunsbrother/prjs/ltvu/llms/LLaVA-NeXT/work_dirs/{captioner_name}/global')
+    p_caps_dir = Path('/data/gunsbrother/prjs/ltvu/everything/sbert_finetune/data/captions/llava-v1.6-34b/global')
     p_out_dir = Path(f'/data/gunsbrother/prjs/ltvu/llms/GroundVQA/data/features/{captioner_name}/{model_name}{postfix}')
     p_out_dir.mkdir(parents=True, exist_ok=True)
 
