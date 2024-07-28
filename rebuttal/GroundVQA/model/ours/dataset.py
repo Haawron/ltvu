@@ -26,10 +26,10 @@ class BaseDataset(Dataset):
         self.annotations = json.loads(Path(os.path.join(data_dir, f'annotations.{split}.json')).read_text())
         self.max_v_len = max_v_len
         print(f'{split} set: {len(self.annotations)}')
-    
+
     def __len__(self):
         return len(self.annotations)
-    
+
     def _get_video_feature(self, video_id):
         video_feature = torch.from_numpy(self.video_features[video_id][:])
         v_len = video_feature.shape[0]
@@ -42,9 +42,16 @@ class BaseDataset(Dataset):
         return video_feature, v_len, sample_ratio
 
 
+enable_env_feature = True
+
+
 class NLQDataset(BaseDataset):
     def __init__(self, data_dir, split, feature_type, max_v_len):
         super().__init__(data_dir, split, feature_type, max_v_len)
+        if enable_env_feature:
+            self.p_env_feat_dir = Path('/data/soyeonhong/GroundVQA/env_feature/103204/')
+            valid_clip_uids = set(p.stem for p in (self.p_env_feat_dir/'captions').glob('*.pt'))
+            self.annotations = [a for a in self.annotations if a['video_id'] in valid_clip_uids]
 
     def __getitem__(self, index):
         video_id = self.annotations[index]['video_id']
@@ -52,6 +59,10 @@ class NLQDataset(BaseDataset):
         question = self.annotations[index]['question']
 
         video_feature, v_len, sample_ratio = self._get_video_feature(video_id)
+        if enable_env_feature:
+            env_feature = torch.load(self.p_env_feat_dir / 'captions' / f'{video_id}.pt')
+            env_feature = torch.stack([tensor for _, tensor in env_feature])
+            query_feature, = torch.load(self.p_env_feat_dir / 'queries' / f'{query_id}.pt')
 
         if 'clip_start_sec' in self.annotations[index]:
             start_time = self.annotations[index].get('clip_start_sec')
@@ -79,6 +90,8 @@ class NLQDataset(BaseDataset):
             'question': f"question: {question} video: ",
             'answer': 'None',
             'v_feat': video_feature,
+            'env_feat': env_feature,
+            'q_feat': query_feature,
             'v_len': v_len,
             'segments': segments,
             'one_hot_labels': one_hot_labels,
@@ -120,7 +133,7 @@ class QADataset(BaseDataset):
             answer_str = choices[answer_index]  # (A/B/C/D) xx
         else:
             raise NotImplementedError
-        
+
         video_feature, v_len, sample_ratio = self._get_video_feature(video_id)
 
         start_frame = self.annotations[index].get('moment_start_frame')
@@ -164,7 +177,7 @@ class JointDataset(ConcatDataset):
     def collate_fn(self, batch):
         question = [b['question'] for b in batch]
         question_tok = self.tokenizer(question, padding=True, return_tensors='pt', add_special_tokens=False)
-        
+
         answer = [b['answer'] for b in batch]
         labels = self.tokenizer(answer, padding=True, return_tensors='pt').input_ids
         # NOTE: NLQ data does not have an answer
@@ -193,6 +206,13 @@ class JointDataset(ConcatDataset):
             'task': [b['task'] for b in batch]
         }
 
+        if 'env_feat' in batch[0]:
+            env_feat_raw = [b['env_feat'] for b in batch]
+            env_feat_padded = pad_sequence(env_feat_raw, batch_first=True)
+            result['env_feat'] = env_feat_padded  # [B, Max T_env, D]
+            result['env_mask'] = pad_sequence([torch.ones(len(e)) for e in env_feat_raw], batch_first=True).bool()
+            result['q_feat'] = torch.stack([b['q_feat'] for b in batch])
+
         return result
 
 
@@ -204,7 +224,7 @@ class JointDataModule(pl.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
+
     def setup(self, stage=None):
         CloseQA_weight = self.config.get('closeqa_weight', 50)
         print(f'CloseQA percentage: {CloseQA_weight}%')
@@ -241,30 +261,30 @@ class JointDataModule(pl.LightningDataModule):
             batch_size=self.config.batch_size,
             shuffle=True,
             drop_last=True,
-            num_workers=self.config.num_workers,
+            num_workers=8,
             collate_fn=self.train_dataset.collate_fn,
             pin_memory=True,
             persistent_workers=True
         )
-    
+
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
             drop_last=False,
-            num_workers=self.config.num_workers,
+            num_workers=8,
             collate_fn=self.val_dataset.collate_fn,
             pin_memory=True
         )
-    
+
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
             drop_last=False,
-            num_workers=self.config.num_workers,
+            num_workers=8,
             collate_fn=self.val_dataset.collate_fn,
             pin_memory=True
         )

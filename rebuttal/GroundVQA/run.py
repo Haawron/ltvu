@@ -72,7 +72,7 @@ def _adjust_ddp_config(trainer_cfg):
         strategy = 'ddp'  # Select ddp by default
     if strategy == 'ddp':
         trainer_cfg['strategy'] = DDPPlugin(
-            find_unused_parameters=trainer_cfg['find_unused_parameters'], 
+            find_unused_parameters=trainer_cfg['find_unused_parameters'],
             gradient_as_bucket_view=True)
     return trainer_cfg
 
@@ -106,8 +106,8 @@ def train(config: DictConfig):
 
     if trainer_cfg.test_only:  # evaluation
         trainer = pl.Trainer.from_argparse_args(
-            trainer_cfg, 
-            enable_checkpointing=False, 
+            trainer_cfg,
+            enable_checkpointing=False,
             logger=False
         )
         if trainer_cfg.val:
@@ -123,29 +123,37 @@ def train(config: DictConfig):
         if 'QaEgo4D_test' in config.dataset.test_splits:
             model_checkpoint.append(
                 ModelCheckpoint(
-                    save_last=False, 
-                    monitor='val_ROUGE', 
+                    save_last=False,
+                    monitor='val_ROUGE',
                     mode='max',
-                    save_top_k=1, 
+                    save_top_k=1,
                     filename='{step}-{' + 'val_ROUGE' + ':.3f}')
             )
         if 'QaEgo4D_test_close' in config.dataset.test_splits:
             model_checkpoint.append(
                 ModelCheckpoint(
-                    save_last=False, 
-                    monitor='val_close_acc', 
+                    save_last=False,
+                    monitor='val_close_acc',
                     mode='max',
-                    save_top_k=1, 
+                    save_top_k=1,
                     filename='{step}-{' + 'val_close_acc' + ':.3f}')
             )
         if 'NLQ_val' in config.dataset.test_splits:
             model_checkpoint.append(
                 ModelCheckpoint(
-                    save_last=False, 
-                    monitor='val_R1_03', 
+                    save_last=False,
+                    monitor='val_R1_03',
                     mode='max',
-                    save_top_k=1, 
+                    save_top_k=1,
                     filename='{step}-{' + 'val_R1_03' + ':.3f}')
+            )
+            model_checkpoint.append(
+                ModelCheckpoint(
+                    save_last=False,
+                    monitor='val_R5_03',
+                    mode='max',
+                    save_top_k=1,
+                    filename='{step}-{' + 'val_R5_03' + ':.3f}')
             )
         trainer = pl.Trainer.from_argparse_args(trainer_cfg, callbacks=[
             LearningRateMonitor(logging_interval='step'),
@@ -153,9 +161,9 @@ def train(config: DictConfig):
             *model_checkpoint
         ])
         trainer.fit(
-            model, data.train_dataloader(), data.val_dataloader(), 
+            model, data.train_dataloader(), data.val_dataloader(),
         )
 
-    
+
 if __name__ == '__main__':
     train()

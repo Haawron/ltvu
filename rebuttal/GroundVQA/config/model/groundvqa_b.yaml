@@ -2,3 +2,9 @@ _target_: model.ours.model.GroundVQA
 lm_path: google/flan-t5-base
 input_dim: ${dataset.feature_dim}
 freeze_word: True
+
+# default settings for the submission
+enable_infuser: true
+enable_infuser_activation: false
+infuser_ca_mask: false  # 실수로 mask에 None 넣어줬는데 더 잘 됨
+infuser_proper_v_masking: false

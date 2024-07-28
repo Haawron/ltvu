@@ -1,71 +1,20 @@
 import json
 import copy
 import random
+from pprint import pformat
+
+from omegaconf import OmegaConf
 
 import torch
 import pytorch_lightning as pl
+from pytorch_lightning.utilities.distributed import rank_zero_info
 from hydra.utils import instantiate
 from transformers import AutoTokenizer
 from torch.optim.lr_scheduler import OneCycleLR
 
+
 from eval import calc_metrics
 from eval_nlq import ReferringRecall
-
-
-class TestLightningModule(pl.LightningModule):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.tokenizer = AutoTokenizer.from_pretrained(config.dataset.tokenizer_path)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.model = instantiate(config.model, max_v_len=config.dataset.max_v_len)
-
-    def test_step(self, batch, batch_idx):
-        nlq_results, answer_tokens = self.model.generate(**batch)
-        pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
-        return {
-            'question': batch['q_text'],
-            'video_id': batch['video_id'],
-            'answer': batch['a_text'] if 'a_text' in batch else '',
-            'pred_answer': pred_answer,
-            'nlq_results': nlq_results,
-            'query_id': batch['query_id'],
-            'sample_ratio': batch['sample_ratio'],
-            'task': batch['task'],
-            'clip_uid': batch['video_id']
-        }
-
-    def test_epoch_end(self, outputs):
-        self.save_nlq_results(outputs)
-
-    def save_nlq_results(self, preds):
-        # aggregate preds
-        pred_dict = {
-            "version": "1.0",
-            "challenge": "ego4d_nlq_challenge",
-            "results": []
-        }
-        for batch_pred in preds:
-            for i in range(len(batch_pred['video_id'])):
-                qid = batch_pred['query_id'][i]
-                annotation_uid, query_idx = qid.split('_')
-                query_idx = int(query_idx)
-                clip_uid = batch_pred['clip_uid'][i]
-                sample_ratio = batch_pred['sample_ratio'][i]
-                predicted_times = [
-                    [segment[0] / sample_ratio, segment[1] / sample_ratio] 
-                    for segment in batch_pred['nlq_results'][i]['segments'].cpu().detach().tolist()
-                ]
-                
-                pred_dict['results'].append({
-                    'clip_uid': clip_uid,
-                    'annotation_uid': annotation_uid,
-                    'query_idx': query_idx,
-                    'predicted_times': predicted_times
-                })
-
-        with open('nlq_eval_results/nlq_v2.json', 'w') as f:
-            json.dump(pred_dict, f)
 
 
 class LightningModule(pl.LightningModule):
@@ -82,6 +31,11 @@ class LightningModule(pl.LightningModule):
         self._log_indices = {}
         self.total_steps = total_steps
 
+    def on_fit_start(self):
+        if pl.utilities.rank_zero_only.rank == 0:
+            msg = OmegaConf.to_yaml(self.config, resolve=True)
+            rank_zero_info(f'\n\n\n{msg}\n\n\n')
+
     def training_step(self, batch, batch_idx):
         total_loss, ce_loss, time_loss = self.model(**batch)
         self.log('total_loss', total_loss, rank_zero_only=True)
@@ -90,10 +44,11 @@ class LightningModule(pl.LightningModule):
         return {
             'loss': total_loss,
         }
-    
+
     def validation_step(self, batch, batch_idx):
         nlq_results, answer_tokens = self.model.generate(**batch)
-        pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
+        pred_answer = [''] * len(batch['video_id'])
+        # pred_answer = self.tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
         return {
             'question': batch['q_text'],
             'video_id': batch['video_id'],
@@ -104,7 +59,7 @@ class LightningModule(pl.LightningModule):
             'sample_ratio': batch['sample_ratio'],
             'task': batch['task']
         }
-    
+
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
@@ -112,11 +67,11 @@ class LightningModule(pl.LightningModule):
         num_val_steps_to_log, num_samples_per_batch_to_log = 5, 3  # Could be configurable via cfg
         steps_to_log_indices = random.sample(range(len(outputs)), k=min(len(outputs), num_val_steps_to_log))
         self._log_indices[name] = {
-            'steps': steps_to_log_indices, 
+            'steps': steps_to_log_indices,
             'samples': [
                 random.sample(
                     range(len(outputs[step]['answer'])),
-                    k=min(len(outputs[step]['answer']), 
+                    k=min(len(outputs[step]['answer']),
                     num_samples_per_batch_to_log))
                 for step in steps_to_log_indices
             ]
@@ -177,7 +132,7 @@ class LightningModule(pl.LightningModule):
                 new_prediction = [
                     [   segment[0] / sample_ratio,
                         segment[1] / sample_ratio,
-                        score  ] 
+                        score  ]
                     for segment, score in zip(
                         output['nlq_results'][i]['segments'].cpu().detach().tolist(),
                         output['nlq_results'][i]['scores'].cpu().detach().tolist(),
@@ -276,7 +231,7 @@ class LightningModule(pl.LightningModule):
                 anneal_strategy='linear'
             )
             return {
-                'optimizer': optimizer, 
+                'optimizer': optimizer,
                 'lr_scheduler': {
                     'scheduler': lr_scheduler,
                     'interval': 'step'
